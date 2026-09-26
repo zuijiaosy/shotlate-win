@@ -1,0 +1,139 @@
+# Every push to main tests, builds x64 and ARM64 with MSVC, packs per-user installers (Inno Setup), signs them
+# for WinSparkle and publishes a GitHub release with appcast.xml. Put "[skip release]" in a commit message to
+# push without releasing.
+#
+# Version: major.minor come from Cargo.toml; the patch number counts up from the latest vX.Y.* tag.
+# Required secret:
+#   SPARKLE_ED_PRIVATE_KEY  the macOS version's Sparkle EdDSA key; its public half is EDDSA_PUBLIC_KEY in
+#                           src/win/updater.rs. Installed copies reject updates signed with anything else.
+# Installed copies read https://github.com/zuijiaosy/shotlate-win/releases/latest/download/appcast.xml.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  WINSPARKLE_VERSION: "0.9.4"
+
+jobs:
+  version:
+    if: ${{ !contains(github.event.head_commit.message, '[skip release]') }}
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+      previous: ${{ steps.pick.outputs.previous }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - id: pick
+        run: |
+          base="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          major_minor="${base%.*}"
+          last="$(git tag -l "v${major_minor}.*" --sort=-v:refname | head -1)"
+          if [ -n "$last" ]; then version="${major_minor}.$(( ${last##*.} + 1 ))"; else version="$base"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "previous=$(git tag -l 'v*' --sort=-v:refname | head -1)" >> "$GITHUB_OUTPUT"
+          echo "Releasing $version"
+
+  build:
+    needs: version
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - arch: x64
+            target: x86_64-pc-windows-msvc
+            winsparkle: x64
+          - arch: arm64
+            target: aarch64-pc-windows-msvc
+            winsparkle: ARM64
+    steps:
+      - uses: actions/checkout@v5
+      - name: Rust
+        run: rustup target add ${{ matrix.target }}
+      - name: Set version
+        shell: bash
+        run: sed -i "0,/^version = \".*\"/s//version = \"${{ needs.version.outputs.version }}\"/" Cargo.toml
+      - name: Test
+        if: matrix.arch == 'x64'
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Self-check
+        if: matrix.arch == 'x64'
+        run: target\${{ matrix.target }}\release\shotlate.exe --check all target\check
+      - name: WinSparkle
+        shell: bash
+        run: |
+          curl -fsSL -o ws.zip "https://github.com/vslavik/winsparkle/releases/download/v${WINSPARKLE_VERSION}/WinSparkle-${WINSPARKLE_VERSION}.zip"
+          unzip -q ws.zip -d ws
+          mkdir -p dist/${{ matrix.arch }}
+          cp "$(find ws -path '*${{ matrix.winsparkle }}/Release/WinSparkle.dll' | head -1)" dist/${{ matrix.arch }}/
+          cp target/${{ matrix.target }}/release/shotlate.exe dist/${{ matrix.arch }}/Shotlate.exe
+          ls -la dist/${{ matrix.arch }}
+      - name: Installer
+        shell: pwsh
+        run: |
+          $iscc = Get-Command iscc -ErrorAction SilentlyContinue
+          if (-not $iscc) { choco install innosetup -y --no-progress; $env:Path += ";C:\Program Files (x86)\Inno Setup 6" }
+          iscc /DAppVersion=${{ needs.version.outputs.version }} /DArch=${{ matrix.arch }} "/DSourceDir=..\dist\${{ matrix.arch }}" installer\shotlate.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.arch }}
+          path: dist/Shotlate-*.exe
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release notes
+        run: |
+          previous="${{ needs.version.outputs.previous }}"
+          range="${previous:+$previous..}HEAD"
+          {
+            echo "### 变化"
+            echo
+            git log "$range" --no-merges --format='%B' | grep -E '^- ' || echo "- 改进和修复"
+            echo
+            echo "### 安装"
+            echo
+            echo "下载 \`Shotlate-${{ needs.version.outputs.version }}-x64.exe\`（大多数电脑）或 \`-arm64.exe\`（骁龙等 ARM 电脑），双击安装，不需要管理员权限。支持 Windows 10 2004 及以上。"
+            echo
+            echo "首次打开会提示下载文字识别组件（约 23 MB）。Windows 可能提示“已保护你的电脑”：点“更多信息”→“仍要运行”。"
+          } > notes.md
+          cat notes.md
+      - name: Sign and write appcast
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then echo "::error::Secret SPARKLE_ED_PRIVATE_KEY is missing"; exit 1; fi
+          pip install --quiet cryptography
+          v="${{ needs.version.outputs.version }}"
+          base="https://github.com/${{ github.repository }}/releases/download/v$v"
+          python3 scripts/appcast.py "$v" "dist/Shotlate-$v-x64.exe" "$base/Shotlate-$v-x64.exe" \
+            "dist/Shotlate-$v-arm64.exe" "$base/Shotlate-$v-arm64.exe" notes.md > dist/appcast.xml
+          cat dist/appcast.xml
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          gh release create "v$v" dist/Shotlate-$v-x64.exe dist/Shotlate-$v-arm64.exe dist/appcast.xml \
+            --target "$GITHUB_SHA" --title "Shotlate for Windows $v" --notes-file notes.md

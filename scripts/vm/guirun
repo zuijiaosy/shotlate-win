@@ -1,0 +1,14 @@
+#!/bin/bash
+# Runs a command line on the logged-in desktop of "tester" (a scheduled task) and waits for it.
+#   scripts/vm/guirun 'C:\shotlate\Shotlate.exe --check all C:\shotlate\check' [timeout seconds]
+here="$(cd "$(dirname "$0")" && pwd)"
+tmp="$(mktemp)"
+printf '@echo off\r\ncd /d C:\\shotlate\r\n%s > C:\\shotlate\\last-run.txt 2>&1\r\necho %%ERRORLEVEL%% > C:\\shotlate\\last-exit.txt\r\n' "$1" > "$tmp"
+utmctl file push "Shotlate Win11" 'C:\shotlate\run.cmd' < "$tmp" 2>/dev/null
+"$here/gx" 'schtasks /end /tn ShotlateRun >nul 2>&1 & del /q C:\shotlate\last-exit.txt 2>nul & schtasks /create /tn ShotlateRun /tr "C:\shotlate\run.cmd" /sc once /st 23:59 /ru tester /rp shotlate /it /rl highest /f >nul && schtasks /run /tn ShotlateRun' >/dev/null
+for _ in $(seq 1 "${2:-300}"); do
+  "$here/gx" 'if exist C:\shotlate\last-exit.txt (type C:\shotlate\last-exit.txt)' | grep -qE '^[0-9]' && break
+  sleep 1
+done
+utmctl file pull "Shotlate Win11" 'C:\shotlate\last-run.txt' 2>/dev/null
+echo "exit: $("$here/gx" 'type C:\shotlate\last-exit.txt' | head -1)"

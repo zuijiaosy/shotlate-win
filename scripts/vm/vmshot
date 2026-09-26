@@ -1,0 +1,7 @@
+#!/bin/bash
+# Screenshots the VM window (even when covered) to $1. Compiles the window-id helper on first use.
+here="$(cd "$(dirname "$0")" && pwd)"
+bin="${TMPDIR:-/tmp}/utm-window-id"
+[ -x "$bin" ] || swiftc -O "$here/utm-window-id.swift" -o "$bin"
+id=$("$bin" | awk '$2=="Shotlate" {print $1; exit}')
+screencapture -x -o -l "$id" "$1"

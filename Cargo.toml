@@ -1,0 +1,81 @@
+[package]
+name = "shotlate"
+version = "0.1.0"
+edition = "2024"
+description = "Shotlate for Windows: capture, annotate, copy, save, pin, recognize and translate."
+license = "MIT"
+build = "build.rs"
+
+[dependencies]
+tiny-skia = "0.12"
+ab_glyph = "0.2"
+png = "0.18"
+jpeg-encoder = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tract-onnx = { version = "0.23", default-features = false }
+
+# Windows talks TLS through Schannel and honors the system proxy; elsewhere (dev tools and tests on macOS) rustls.
+[target.'cfg(windows)'.dependencies]
+ureq = { version = "3", default-features = false, features = ["native-tls", "gzip", "json", "win-system-proxy"] }
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_Security_Cryptography",
+    "Win32_System_Com",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_DataExchange",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_UI_Controls",
+    "Win32_UI_Controls_Dialogs",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_Ime",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(not(windows))'.dependencies]
+ureq = { version = "3", features = ["json"] }
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+# Unwind, not abort: a bug in a background job (OCR, translation) then fails that job instead of closing the app.
+panic = "unwind"
+
+# tract is unusable unoptimized; keep dependencies fast even in debug builds.
+[profile.dev.package."*"]
+opt-level = 3
+
+# tract's graph code is large and generic but not hot; its kernels (tract-linalg) stay fully optimized.
+[profile.release.package.tract-core]
+opt-level = "s"
+[profile.release.package.tract-hir]
+opt-level = "s"
+[profile.release.package.tract-onnx]
+opt-level = "s"
+[profile.release.package.tract-nnef]
+opt-level = "s"
+[profile.release.package.tract-onnx-opl]
+opt-level = "s"
+[profile.release.package.tract-data]
+opt-level = "s"
+[profile.release.package.rustfft]
+opt-level = "s"
+[profile.release.package.ndarray]
+opt-level = "s"

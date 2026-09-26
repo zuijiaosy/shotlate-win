@@ -1,0 +1,10 @@
+#!/bin/bash
+# Runs a cmd.exe command line in the VM through the guest agent (as SYSTEM, no desktop) and prints its output.
+#   scripts/vm/gx 'dir C:\shotlate'
+here="$(cd "$(dirname "$0")" && pwd)"
+osascript "$here/guest-exec.applescript" "$1" 2>&1 | python3 -c '
+import sys,base64
+parts=sys.stdin.read().strip().split("|")
+if len(parts)<3: print("|".join(parts)); sys.exit(1)
+dec=lambda b: base64.b64decode(b).decode("gbk","replace") if b and b!="missing value" else ""
+sys.stdout.write(dec(parts[0])); sys.stderr.write(dec(parts[1])); print("[exit %s]"%parts[2])'

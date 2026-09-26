@@ -1,0 +1,8 @@
+Shotlate 是一个 macOS 菜单栏截图工具，支持 OCR 和翻译。
+截图后按 X 识别文字，按 Y 翻译成简体中文；按 T 贴到屏幕上。
+The quick brown fox jumps over the lazy dog. Version 0.1.9 (build 42)
+默认保存到 ~/Downloads，文件名形如 Shotlate-2026-09-26-143015.png
+let config = TranslationConfig(baseURL: "https://api.deepseek.com")
+for (i, line) in lines.enumerated() { print(i, line.text) }
+日本語のテキストも認識できますか？ スクリーンショットを撮る。
+小号界面文字：设置 · 快捷键 · 保存 · 翻译 · 通用 · 检查更新…

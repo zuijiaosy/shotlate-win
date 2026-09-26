@@ -1,0 +1,38 @@
+# Run once by hand: copies the recognition models from ModelScope into the release "models-v1", which the app
+# uses when ModelScope can't be reached. The files are checked against the hashes in src/ocr/models.rs first.
+name: Mirror models
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download and verify
+        run: |
+          mkdir models
+          python3 - <<'PY'
+          import hashlib, re, urllib.request, pathlib
+          src = pathlib.Path("src/ocr/models.rs").read_text()
+          pairs = re.findall(r'sha256: "([0-9a-f]{64})",\s*urls: \[\s*"(https://www\.modelscope\.cn[^"]+)"', src)
+          assert len(pairs) == 2, pairs
+          for sha, url in pairs:
+              name = url.rsplit("/", 1)[1]
+              data = urllib.request.urlopen(url, timeout=120).read()
+              got = hashlib.sha256(data).hexdigest()
+              assert got == sha, f"{name}: {got} != {sha}"
+              pathlib.Path("models", name).write_bytes(data)
+              print("ok", name, len(data))
+          PY
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view models-v1 >/dev/null 2>&1 || gh release create models-v1 --title "识别模型（备用下载）" \
+            --notes "Shotlate 首次下载文字识别组件时，ModelScope 连不上会从这里下载。不是应用本身的版本。" --latest=false
+          gh release upload models-v1 models/*.onnx --clobber
