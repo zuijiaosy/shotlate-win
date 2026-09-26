@@ -26,9 +26,13 @@
 - [x] 后台任务防崩溃 + crash.log
 - [x] 贴图上直接选中、复制文字（和 Mac 一致：拖选、双击选词、三击选行、Ctrl+A / Ctrl+C、右键「复制选中文字」，悬停文字时显示 I 形光标；第一次 Esc 只取消选择）
 
+## 发布与素材
+- [x] 0.1.0 发布（GitHub Actions：x64 / arm64 安装包 + appcast），模型镜像到 `models-v1`
+- [x] 仓库主页指向官网 shotlate.pages.dev；官网加上 Windows 版（首页、下载页、常见问题、使用手册）
+- [x] README 的动图和设置截图换成在 Windows 11 上录制的（`scripts/vm/record-demo.sh`）
+- [ ] 常驻内存约 200 MB（OCR 计划常驻），考虑空闲后释放
+
 ## 需要用户操作
-- [ ] 在 GitHub 创建 `zuijiaosy/shotlate-win`，配置 Secret `SPARKLE_ED_PRIVATE_KEY`（与 Mac 仓库相同）
-- [ ] 推送后手动运行一次 `Mirror models` workflow
 - [ ] 在真实 Windows 上试用 `dist/Shotlate.exe` 或 CI 产出的安装包
 
 ## 无法在本机验证（需要 Windows）

@@ -14,7 +14,7 @@ use windows::Win32::System::Ole::CF_DIB;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MAPVK_VK_TO_VSC, MapVirtualKeyW,
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_MENU, VK_RETURN, VK_SHIFT, VK_SPACE,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEINPUT, SendInput, VIRTUAL_KEY, VK_CONTROL, VK_ESCAPE, VK_LWIN, VK_MENU, VK_RETURN, VK_SHIFT, VK_SPACE,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{PCWSTR, w};
@@ -23,6 +23,8 @@ use super::{screen, util};
 
 struct Run {
     out: PathBuf,
+    /// Recorded demo frames and how long each stays on screen (seconds).
+    frames: Vec<(String, f32)>,
     log: std::fs::File,
     failed: usize,
     width: i32,
@@ -44,6 +46,14 @@ impl Run {
     }
     fn info(&mut self, s: &str) {
         self.line(&format!("INFO {s}"));
+    }
+    /// One frame of the recorded demo, pointer included.
+    fn frame(&mut self, hold: f32) {
+        let name = format!("f{:03}.png", self.frames.len());
+        if let Some(pix) = screen::monitors().first().and_then(|m| screen::grab_with_cursor(&m.rect)) {
+            let _ = pix.save_png(self.out.join(&name));
+            self.frames.push((name, hold));
+        }
     }
     fn shot(&mut self, name: &str) {
         let monitors = screen::monitors();
@@ -278,11 +288,12 @@ fn show_image_window(x: i32, y: i32) {
 pub fn run(out: &Path) -> i32 {
     // `--e2e <out> <section>` runs only that section (capture, save, ocr, pin, settings, translate).
     let only = std::env::args().nth(3);
+    // `demo` (the README recording) only runs when asked for by name.
     let want = |name: &str| only.as_deref().is_none_or(|o| o == name);
     let _ = std::fs::create_dir_all(out);
     let Ok(log) = std::fs::File::create(out.join("e2e.log")) else { return 2 };
     let (width, height) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
-    let mut run = Run { out: out.to_path_buf(), log, failed: 0, width, height };
+    let mut run = Run { out: out.to_path_buf(), frames: Vec::new(), log, failed: 0, width, height };
     run.info(&format!("screen {width}x{height}, dpi {}", unsafe { windows::Win32::UI::HiDpi::GetDpiForSystem() }));
 
     // 1. The app: start it if it isn't running, and answer the first-launch question (download the models).
@@ -307,6 +318,11 @@ pub fn run(out: &Path) -> i32 {
     // Shared by the sections: the selection used in capture / save, and the test image used by ocr / pin / translate.
     let (x0, y0, x1, y1) = (width / 8, height / 8, width * 5 / 8, height * 5 / 8);
     let (ix, iy) = (width / 10, height / 10);
+    if only.as_deref() == Some("demo") {
+        demo(&mut run);
+        run.line(&format!("DONE {} failed", run.failed));
+        return if run.failed > 0 { 1 } else { 0 };
+    }
     if want("capture") {
     // 2. Capture: hotkey, focus, drag, annotate, Chinese text, copy.
     start_capture();
@@ -523,4 +539,205 @@ pub fn run(out: &Path) -> i32 {
     }
     run.line(&format!("DONE {} failed", run.failed));
     if run.failed > 0 { 1 } else { 0 }
+}
+
+/// Moves the pointer from `from` to `to` in `steps`, recording a frame at each step.
+fn glide(run: &mut Run, from: (i32, i32), to: (i32, i32), steps: i32, down: bool) {
+    move_to(run, from.0, from.1);
+    if down {
+        send(&[mouse(run, from.0, from.1, MOUSEEVENTF_LEFTDOWN)]);
+        sleep(60);
+    }
+    for i in 1..=steps {
+        let (x, y) = (from.0 + (to.0 - from.0) * i / steps, from.1 + (to.1 - from.1) * i / steps);
+        move_to(run, x, y);
+        sleep(30);
+        run.frame(0.05);
+    }
+    if down {
+        send(&[mouse(run, to.0, to.1, MOUSEEVENTF_LEFTUP)]);
+        sleep(200);
+    }
+}
+
+/// Types pinyin, one frame per key, then commits the first candidate.
+fn type_pinyin(run: &mut Run, s: &str) {
+    for c in s.chars() {
+        type_keys(&c.to_string());
+        sleep(80);
+        run.frame(0.12);
+    }
+    key(VK_SPACE.0);
+    sleep(400);
+    run.frame(0.5);
+}
+
+// Shown in Notepad as the thing being captured.
+const DEMO_TEXT: &str = "Shotlate for Windows\r\n\r\n按 Alt+Shift+A 开始截图，拖出选区后标注。\r\n按 X 识别文字，按 Y 翻译，按 T 贴到屏幕上。\r\nEnter 复制，Ctrl+S 保存到“下载”文件夹。\r\n\r\nScreenshots stay on your computer.\r\nOnly the recognized text is sent for translation.\r\n";
+
+/// `--e2e <out> demo`: records the README's capture flow on the real desktop, frame by frame, with an
+/// ffconcat list (`frames.ffconcat`) for ffmpeg. Geometry below assumes the VM's 1024×768 screen.
+fn demo(run: &mut Run) {
+    let file = std::env::temp_dir().join("Shotlate 使用说明.txt");
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(DEMO_TEXT.as_bytes());
+    let _ = std::fs::write(&file, bytes);
+    chord(&[VK_LWIN.0], 0x44);
+    sleep(800);
+    let _ = std::process::Command::new("notepad.exe").arg(&file).spawn();
+    let found = wait_for(10_000, || find(w!("Notepad"), PCWSTR::null()).is_some());
+    run.check(found, "Notepad opens the demo text");
+    sleep(1500);
+    let (nx, ny, nw, nh) = (150, 90, 720, 470);
+    if let Some(np) = find(w!("Notepad"), PCWSTR::null()) {
+        unsafe {
+            let _ = SetWindowPos(np, None, nx, ny, nw, nh, SWP_NOZORDER | SWP_SHOWWINDOW);
+            let _ = SetForegroundWindow(np);
+        }
+    }
+    sleep(500);
+    for _ in 0..3 {
+        chord(&[VK_CONTROL.0], 0xBB);
+    }
+    sleep(800);
+    move_to(run, 940, 680);
+    sleep(300);
+    run.frame(1.0);
+
+    // Capture: the pointer glides onto Notepad, which gets highlighted.
+    start_capture();
+    run.check(wait_for(5_000, || overlay().is_some()), "the capture shortcut opens the overlay");
+    sleep(600);
+    run.frame(0.4);
+    glide(run, (940, 680), (nx + 420, ny + 300), 10, false);
+    run.frame(1.2);
+
+    // Drag a selection around the text.
+    let (sx0, sy0, sx1, sy1) = (nx + 10, ny + 86, nx + nw - 30, ny + 306);
+    glide(run, (sx0, sy0), (sx1, sy1), 14, true);
+    run.frame(1.0);
+
+    // Rectangle, arrow, then two numbers with captions.
+    key(0x31);
+    run.frame(0.3);
+    glide(run, (nx + 42, ny + 140), (nx + 162, ny + 168), 8, true);
+    run.frame(0.5);
+    key(0x32);
+    glide(run, (nx + 470, ny + 100), (nx + 172, ny + 150), 8, true);
+    run.frame(0.5);
+    key(0x37);
+    click(run, nx + 436, ny + 179);
+    run.frame(0.3);
+    type_pinyin(run, "shibie");
+    click(run, nx + 426, ny + 204);
+    run.frame(0.3);
+    type_pinyin(run, "baocun");
+    key(VK_ESCAPE.0);
+    sleep(300);
+    run.frame(1.0);
+
+    // X: recognized text in the editable panel.
+    key(0x58);
+    let recognized = wait_for(30_000, || overlay_edit_texts().iter().any(|t| t.contains("Windows")));
+    run.check(recognized, "X shows the recognized text");
+    sleep(300);
+    run.frame(2.5);
+    run.shot("demo-ocr");
+    key(VK_ESCAPE.0);
+    sleep(300);
+
+    // T: pin it, then select text on the pin like in a text field.
+    key(0x54);
+    let pinned = wait_for(3_000, || find(w!("ShotlatePin"), PCWSTR::null()).is_some());
+    run.check(pinned, "T pins the selection");
+    sleep(500);
+    run.frame(1.0);
+    sleep(3_000);
+    let (wx, wy) = (nx + 300, ny + 254);
+    glide(run, (sx1 - 40, sy1 - 20), (wx, wy), 8, false);
+    for _ in 0..2 {
+        send(&[mouse(run, wx, wy, MOUSEEVENTF_LEFTDOWN)]);
+        send(&[mouse(run, wx, wy, MOUSEEVENTF_LEFTUP)]);
+        sleep(60);
+    }
+    sleep(300);
+    run.frame(1.2);
+    run.shot("demo-pin-word");
+    glide(run, (nx + 22, ny + 145), (nx + 350, ny + 254), 10, true);
+    run.frame(0.6);
+    chord(&[VK_CONTROL.0], 0x43);
+    sleep(200);
+    run.frame(1.6);
+    run.shot("demo-pin-copied");
+    key(VK_ESCAPE.0);
+    key(VK_ESCAPE.0);
+    sleep(400);
+    run.frame(1.0);
+
+    // The settings window's panes, each cropped to the window (README's settings.gif).
+    if let Some(app) = find(w!("ShotlateApp"), PCWSTR::null()) {
+        unsafe {
+            let _ = PostMessageW(Some(app), WM_APP + 3, WPARAM(0), LPARAM(0));
+        }
+    }
+    run.check(wait_for(3_000, || find(w!("ShotlateSettings"), PCWSTR::null()).is_some()), "settings window opens");
+    if let Some(s) = find(w!("ShotlateSettings"), PCWSTR::null()) {
+        sleep(600);
+        let scale = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(s) }.max(96) as f32 / 96.0;
+        let mut frame = windows::Win32::Foundation::RECT::default();
+        unsafe {
+            let _ = windows::Win32::Graphics::Dwm::DwmGetWindowAttribute(
+                s,
+                windows::Win32::Graphics::Dwm::DWMWA_EXTENDED_FRAME_BOUNDS,
+                &mut frame as *mut _ as *mut core::ffi::c_void,
+                std::mem::size_of::<windows::Win32::Foundation::RECT>() as u32,
+            );
+        }
+        for pane in 0..4 {
+            let p = crate::ui::settings_view::sidebar_center(pane);
+            let mut pt = windows::Win32::Foundation::POINT { x: (p.x * scale) as i32, y: (p.y * scale) as i32 };
+            unsafe {
+                let _ = windows::Win32::Graphics::Gdi::ClientToScreen(s, &mut pt);
+            }
+            click(run, pt.x, pt.y);
+            // Park the pointer outside the window so no hover state shows.
+            move_to(run, frame.right + 40, frame.bottom + 20);
+            sleep(500);
+            if let Some(pix) = screen::grab(&frame) {
+                let _ = pix.save_png(run.out.join(format!("settings-{pane}.png")));
+            }
+        }
+        unsafe {
+            let _ = PostMessageW(Some(s), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+
+    let mut list = String::from("ffconcat version 1.0\n");
+    for (name, hold) in &run.frames {
+        list.push_str(&format!("file {name}\nduration {hold}\n"));
+    }
+    if let Some((last, _)) = run.frames.last() {
+        list.push_str(&format!("file {last}\n"));
+    }
+    let _ = std::fs::write(run.out.join("frames.ffconcat"), list);
+    if let Some(np) = find(w!("Notepad"), PCWSTR::null()) {
+        unsafe {
+            let _ = PostMessageW(Some(np), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
+/// Texts of the overlay's EDIT children (the hidden text input and the OCR panel).
+fn overlay_edit_texts() -> Vec<String> {
+    let Some(o) = overlay() else { return Vec::new() };
+    let mut texts = Vec::new();
+    let mut after: Option<HWND> = None;
+    while let Ok(h) = unsafe { FindWindowExW(Some(o), after, w!("EDIT"), PCWSTR::null()) } {
+        if h.0.is_null() {
+            break;
+        }
+        texts.push(window_text(h));
+        after = Some(h);
+    }
+    texts
 }

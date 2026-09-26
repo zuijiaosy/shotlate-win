@@ -38,6 +38,7 @@ scripts/vm/install.sh           # 在虚拟机里用 Inno Setup 打正式安装�
 scripts/vm/test.sh              # 交叉编译 → 拷进虚拟机 → --check all + --e2e → 日志和截图拉回 target/vm-e2e/
 scripts/vm/gx 'dir C:\shotlate' # 在虚拟机里执行命令（SYSTEM 身份，没有桌面）
 scripts/vm/guirun '<命令行>'     # 在 tester 的桌面上执行（计划任务），GUI 相关都要走这个
+scripts/vm/record-demo.sh       # 录 README / 官网素材（见下方「README 素材」）
 scripts/vm/vmshot out.png       # 从 Mac 截虚拟机窗口
 scripts/vm/setup.sh             # 从零重建虚拟机（下载微软官方镜像 + 无人值守安装，约 30 分钟）
 ```
@@ -92,7 +93,18 @@ tests/data/   OCR 测试图（mixed.png 有标准答案 mixed.txt）
 - 代码签名：暂时不签，用户首次运行会看到 SmartScreen 提示；发过几个版本后申请 SignPath Foundation 的免费开源签名。Windows 截屏不需要任何权限，所以签名只影响首次运行的提示。
 - 提交信息用中文 conventional commits；正文里的 `- ` 列表会被收进发布说明，写成给用户看的变化；结尾加 `Co-Authored-By: Claude <noreply@anthropic.com>`。
 
+## README 素材
+
+`docs/images/capture-flow.gif` 和 `settings.gif` 由 `scripts/vm/record-demo.sh` 生成：在虚拟机里用已安装的 Shotlate 跑 `--e2e <目录> demo`（记事本打开一段说明文字 → 热键截图 → 选中窗口 → 框选 → 标注 → X 识别 → T 贴图并选中文字 → 打开设置逐页截图），每一帧都画上鼠标指针，最后用 ffmpeg 合成。同时在 `target/demo/` 输出官网用的 `capture-flow.mp4` 和 `capture-flow-poster.webp`，复制到官网的 `public/shots/win-capture-flow.*`。
+
+- 录制时会把虚拟机里的截图快捷键临时改回默认的 `Alt+Shift+A`（备份为 `settings.json.bak`），脚本退出时（包括被中断）用 `trap` 恢复。
+- `demo` 段只在显式指定时运行，不属于 `--e2e` 的默认测试。坐标按虚拟机 1024×768 的屏幕写死。
+- 虚拟机访问不了 github.com（能访问 ModelScope），要装 CI 发布的安装包，先在 Mac 上 `gh release download` 再 `utmctl file push`。
+
 ## 容易踩的坑
+
+- 用 guirun 启动常驻的 Shotlate 时要写 `explorer.exe "<路径>"`：run.cmd 把输出重定向到 last-run.txt，直接启动或 `cmd /c start` 会让应用继承这个文件句柄，之后每次 guirun 都因为写不了这个文件而什么都不执行。
+- 常驻内存约 200 MB（arm64 实测工作集），大头是预热后留在内存里的 OCR 计划（检测器按屏幕尺寸、识别器按宽度分桶各一份）。要降下来得在空闲一段时间后释放计划，代价是之后第一次识别变慢。
 
 - **`match` 里没导入的 Win32 常量会变成通配绑定**，吞掉后面所有分支。main.rs 里 `#![deny(unreachable_patterns, non_snake_case)]` 把这种情况变成编译错误，别删。
 - 进程是 Per-Monitor V2 DPI 感知（manifest + main 里的调用），坐标都是物理像素；CaptureView 用点（像素 ÷ 缩放），换算在 win/overlay.rs。

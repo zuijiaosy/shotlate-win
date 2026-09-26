@@ -10,7 +10,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetWindowLongW, GetWindowThreadProcessId, GWL_EXSTYLE, IsIconic, IsWindowVisible, WS_EX_TOOLWINDOW,
+    CURSOR_SHOWING, CURSORINFO, DI_NORMAL, DrawIconEx, EnumWindows, GetClassNameW, GetCursorInfo, GetIconInfo, HICON, ICONINFO, GetWindowLongW, GetWindowThreadProcessId, GWL_EXSTYLE, IsIconic, IsWindowVisible, WS_EX_TOOLWINDOW,
     WS_EX_TRANSPARENT,
 };
 use windows::core::BOOL;
@@ -47,6 +47,15 @@ pub fn monitors() -> Vec<Monitor> {
 
 /// The pixels of `r` (screen coordinates) as an opaque premultiplied pixmap.
 pub fn grab(r: &RECT) -> Option<Pixmap> {
+    grab_impl(r, false)
+}
+
+/// Like `grab`, with the mouse pointer drawn in (for recorded demos; BitBlt leaves it out).
+pub fn grab_with_cursor(r: &RECT) -> Option<Pixmap> {
+    grab_impl(r, true)
+}
+
+fn grab_impl(r: &RECT, cursor: bool) -> Option<Pixmap> {
     let (w, h) = (r.right - r.left, r.bottom - r.top);
     if w <= 0 || h <= 0 {
         return None;
@@ -72,6 +81,9 @@ pub fn grab(r: &RECT) -> Option<Pixmap> {
                 let old = SelectObject(mem, HGDIOBJ(bmp.0));
                 // CAPTUREBLT includes layered windows (tooltips, menus) in the copy.
                 let ok = BitBlt(mem, 0, 0, w, h, Some(screen), r.left, r.top, SRCCOPY | CAPTUREBLT).is_ok();
+                if ok && cursor {
+                    draw_cursor(mem, r);
+                }
                 let pix = if ok {
                     let src = std::slice::from_raw_parts(bits as *const u8, (w * h * 4) as usize);
                     let mut pix = Pixmap::new(w as u32, h as u32);
@@ -98,6 +110,27 @@ pub fn grab(r: &RECT) -> Option<Pixmap> {
         let _ = DeleteDC(mem);
         ReleaseDC(None, screen);
         result
+    }
+}
+
+unsafe fn draw_cursor(dc: HDC, r: &RECT) {
+    let mut info = CURSORINFO { cbSize: std::mem::size_of::<CURSORINFO>() as u32, ..Default::default() };
+    unsafe {
+        if GetCursorInfo(&mut info).is_err() || info.flags != CURSOR_SHOWING || info.hCursor.is_invalid() {
+            return;
+        }
+        let icon = HICON(info.hCursor.0);
+        let mut ii = ICONINFO::default();
+        let (hx, hy) = if GetIconInfo(icon, &mut ii).is_ok() {
+            let _ = DeleteObject(HGDIOBJ(ii.hbmMask.0));
+            if !ii.hbmColor.is_invalid() {
+                let _ = DeleteObject(HGDIOBJ(ii.hbmColor.0));
+            }
+            (ii.xHotspot as i32, ii.yHotspot as i32)
+        } else {
+            (0, 0)
+        };
+        let _ = DrawIconEx(dc, info.ptScreenPos.x - hx - r.left, info.ptScreenPos.y - hy - r.top, icon, 0, 0, 0, None, DI_NORMAL);
     }
 }
 
