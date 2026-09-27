@@ -3,7 +3,7 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -26,7 +26,8 @@ use super::{dialogs, hud, overlay, pin, secret, settings_window, updater};
 use crate::app_paths;
 use crate::kit::settings::{self, Shortcut};
 use crate::kit::translator::{TranslationCache, TranslationConfig};
-use crate::ocr::{self, OcrEngine};
+use crate::kit::image::RgbaImage;
+use crate::ocr::{self, OcrEngine, RecognizedLine};
 
 const CLASS: PCWSTR = w!("ShotlateApp");
 const WM_APP_TRAY: u32 = WM_APP + 2;
@@ -71,8 +72,15 @@ pub fn is_downloading() -> bool {
     DOWNLOADING.load(Ordering::Relaxed)
 }
 
-/// The engine, loading it on first use (call from a worker thread: loading takes a moment).
-pub fn ocr_engine() -> Result<Arc<OcrEngine>, String> {
+/// How long the engine stays loaded after its last use. Its optimized plans take 100–200 MB while
+/// loading and building them again costs well under a second next to the recognition itself, so it
+/// is not kept around (nor warmed up at startup). See AGENTS.md.
+const ENGINE_IDLE: Duration = Duration::from_secs(60);
+/// Bumped when a recognition starts and ends; a pending release only goes ahead if it hasn't moved.
+static ENGINE_USES: AtomicU64 = AtomicU64::new(0);
+
+/// The engine, loading it on first use.
+fn ocr_engine() -> Result<Arc<OcrEngine>, String> {
     let mut guard = ENGINE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(e) = guard.as_ref() {
         return Ok(e.clone());
@@ -82,16 +90,26 @@ pub fn ocr_engine() -> Result<Arc<OcrEngine>, String> {
     Ok(engine)
 }
 
-/// Loads and warms up the models in the background, so the first recognition doesn't wait.
-fn warm_up() {
-    if !models_ready() {
-        return;
-    }
-    std::thread::spawn(|| {
-        if let Ok(engine) = ocr_engine() {
-            engine.warm_up();
+/// Recognizes `image`, loading the models if needed (call from a worker thread). The engine is
+/// released once it has been idle for `ENGINE_IDLE`.
+pub fn recognize(image: &RgbaImage) -> Result<Vec<RecognizedLine>, String> {
+    // Schedules the release on drop, so a panicking recognition doesn't pin the engine in memory.
+    struct ReleaseLater;
+    impl Drop for ReleaseLater {
+        fn drop(&mut self) {
+            let mark = ENGINE_USES.fetch_add(1, Ordering::SeqCst) + 1;
+            std::thread::spawn(move || {
+                std::thread::sleep(ENGINE_IDLE);
+                let mut guard = ENGINE.lock().unwrap_or_else(|e| e.into_inner());
+                if ENGINE_USES.load(Ordering::SeqCst) == mark && guard.take().is_some() {
+                    util::trace(|| "OCR engine released after idle".into());
+                }
+            });
         }
-    });
+    }
+    ENGINE_USES.fetch_add(1, Ordering::SeqCst);
+    let _release = ReleaseLater;
+    ocr_engine().and_then(|engine| engine.recognize(image).map_err(|e| e.to_string()))
 }
 
 /// Asks whether to download the recognition models (about 23 MB) and starts the download.
@@ -133,7 +151,6 @@ pub fn start_model_download() {
                 Ok(()) => {
                     hud::show("文字识别组件已下载");
                     overlay::models_became_ready();
-                    warm_up();
                 }
                 Err(e) => dialogs::warn(None, "下载失败", &format!("{e}\n\n可以稍后在托盘图标 → 设置 → 通用里重新下载。")),
             }
@@ -440,7 +457,6 @@ pub fn run() -> i32 {
     add_tray(hwnd);
     register_hotkeys();
     updater::start();
-    warm_up();
     first_launch();
 
     let mut msg = MSG::default();

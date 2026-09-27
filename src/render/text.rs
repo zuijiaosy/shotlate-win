@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use ab_glyph::{Font, FontVec, GlyphId, OutlineCurve};
+use ab_glyph::{Font, FontRef, GlyphId, OutlineCurve};
 use tiny_skia::{Path, PathBuilder, Transform};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -59,15 +59,47 @@ fn candidates(weight: Weight) -> Vec<(&'static str, u32)> {
 }
 
 struct FontChain {
-    fonts: Vec<FontVec>,
+    fonts: Vec<FontRef<'static>>,
+}
+
+/// The bytes of a font file for the life of the process. On Windows the file is memory-mapped: the
+/// fallback chain is several CJK fonts of 10–20 MB each, and mapping keeps them file-backed and
+/// shared, with only the pages of glyphs actually drawn resident, instead of ~100 MB of private copies.
+fn font_bytes(path: &str) -> Option<&'static [u8]> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::{CloseHandle, GENERIC_READ};
+        use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, GetFileSizeEx, OPEN_EXISTING};
+        use windows::Win32::System::Memory::{CreateFileMappingW, FILE_MAP_READ, MapViewOfFile, PAGE_READONLY};
+        let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+        unsafe {
+            let file = CreateFileW(windows::core::PCWSTR(wide.as_ptr()), GENERIC_READ.0, FILE_SHARE_READ, None, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, None).ok()?;
+            let mut size = 0i64;
+            let sized = GetFileSizeEx(file, &mut size).is_ok() && size > 0;
+            let mapping = if sized { CreateFileMappingW(file, None, PAGE_READONLY, 0, 0, None).ok() } else { None };
+            let _ = CloseHandle(file);
+            let mapping = mapping?;
+            // The view keeps the mapping alive; it is never unmapped (fonts live as long as the process).
+            let view = MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0);
+            let _ = CloseHandle(mapping);
+            if view.Value.is_null() {
+                return None;
+            }
+            Some(std::slice::from_raw_parts(view.Value as *const u8, size as usize))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::read(path).ok().map(|d| &*Box::leak(d.into_boxed_slice()))
+    }
 }
 
 impl FontChain {
     fn load(weight: Weight) -> FontChain {
         let mut fonts = Vec::new();
         for (path, index) in candidates(weight) {
-            if let Ok(data) = std::fs::read(path) {
-                if let Ok(font) = FontVec::try_from_vec_and_index(data.clone(), index).or_else(|_| FontVec::try_from_vec_and_index(data, 0)) {
+            if let Some(data) = font_bytes(path) {
+                if let Ok(font) = FontRef::try_from_slice_and_index(data, index).or_else(|_| FontRef::try_from_slice(data)) {
                     fonts.push(font);
                 }
             }
@@ -122,7 +154,7 @@ pub fn fonts_available() -> bool {
     !fonts().regular.fonts.is_empty()
 }
 
-fn units_per_em(font: &FontVec) -> f32 {
+fn units_per_em(font: &FontRef<'static>) -> f32 {
     font.units_per_em().unwrap_or(1000.0)
 }
 

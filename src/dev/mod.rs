@@ -43,8 +43,77 @@ pub fn run_if_requested() -> Option<i32> {
             };
             Some(ocr_cli(Path::new(image.as_str()), &models_dir(&args)))
         }
+        "--ocr-memory" => {
+            let Some(image) = positional.first() else {
+                eprintln!("usage: --ocr-memory image.png [--models dir]");
+                return Some(2);
+            };
+            Some(ocr_memory(Path::new(image.as_str()), &models_dir(&args)))
+        }
         _ => None,
     }
+}
+
+/// (working set, private bytes) of this process in MB; zeros where not measured.
+pub fn process_memory_mb() -> (f64, f64) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
+        use windows::Win32::System::Threading::GetCurrentProcess;
+        let mut c = PROCESS_MEMORY_COUNTERS_EX { cb: std::mem::size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32, ..Default::default() };
+        let ok = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut c as *mut _ as *mut PROCESS_MEMORY_COUNTERS, c.cb) }.is_ok();
+        if ok {
+            return (c.WorkingSetSize as f64 / 1048576.0, c.PrivateUsage as f64 / 1048576.0);
+        }
+    }
+    (0.0, 0.0)
+}
+
+/// `--ocr-memory image.png`: memory and time of each stage of the OCR engine's life, to size the
+/// idle-release trade-off (see AGENTS.md).
+fn ocr_memory(image: &Path, models: &Path) -> i32 {
+    let Some(img) = demo::load_png(image) else {
+        eprintln!("cannot read {}", image.display());
+        return 1;
+    };
+    let report = |stage: &str, t: std::time::Duration| {
+        let (ws, private) = process_memory_mb();
+        println!("{stage:<28} {:>8.0} ms   working set {ws:>6.1} MB   private {private:>6.1} MB", t.as_secs_f64() * 1000.0);
+    };
+    report("start", Default::default());
+    for round in 1..=2 {
+        let t = std::time::Instant::now();
+        let engine = match crate::ocr::OcrEngine::load(models) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("{e}");
+                return 1;
+            }
+        };
+        report(&format!("[{round}] load"), t.elapsed());
+        if round == 1 {
+            let t = std::time::Instant::now();
+            let _ = engine.prepare_det(1920, 1088);
+            report("[1] det plan 1920x1088", t.elapsed());
+            for w in [320, 640, 960] {
+                let t = std::time::Instant::now();
+                let _ = engine.prepare_rec(w);
+                report(&format!("[1] rec plan {w}"), t.elapsed());
+            }
+            let t = std::time::Instant::now();
+            engine.warm_up();
+            report("[1] warm up (runs them)", t.elapsed());
+        }
+        let t = std::time::Instant::now();
+        let lines = engine.recognize(&img).map(|l| l.len()).unwrap_or(0);
+        report(&format!("[{round}] recognize ({lines} lines)"), t.elapsed());
+        let t = std::time::Instant::now();
+        let _ = engine.recognize(&img);
+        report(&format!("[{round}] recognize again"), t.elapsed());
+        drop(engine);
+        report(&format!("[{round}] dropped"), Default::default());
+    }
+    0
 }
 
 pub fn models_dir(args: &[String]) -> PathBuf {

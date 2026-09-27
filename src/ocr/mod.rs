@@ -130,6 +130,16 @@ impl OcrEngine {
         }
     }
 
+    /// Builds (without running) the detector plan for a `w`×`h` input; for measurements.
+    pub fn prepare_det(&self, w: usize, h: usize) -> Result<(), OcrError> {
+        self.det_plan(w, h).map(|_| ())
+    }
+
+    /// Builds (without running) the recognizer plan for input width `width`; for measurements.
+    pub fn prepare_rec(&self, width: usize) -> Result<(), OcrError> {
+        self.rec_plan(width).map(|_| ())
+    }
+
     /// Lines in reading order (top to bottom, then left to right), in pixels of `image`.
     pub fn recognize(&self, image: &RgbaImage) -> Result<Vec<RecognizedLine>, OcrError> {
         let (ori_w, ori_h) = (image.width as usize, image.height as usize);

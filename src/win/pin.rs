@@ -133,8 +133,7 @@ fn prepare_text(hwnd: HWND, image: RgbaImage) {
     let id = hwnd.0 as isize;
     std::thread::spawn(move || {
         let layout = util::guarded(move || {
-            let engine = app::ocr_engine().ok()?;
-            let lines = engine.recognize(&image).ok()?;
+            let lines = app::recognize(&image).ok()?;
             let glyphs = lines
                 .into_iter()
                 .map(|l| {

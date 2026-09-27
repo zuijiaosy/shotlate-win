@@ -19,6 +19,7 @@ cargo check --target x86_64-pc-windows-gnu            # 在 Mac 上检查 Window
 cargo run --release -- --ui-demo out/                 # 离屏驱动截图界面，每一步输出一张 PNG（加 --scale 2 看高分屏）
 cargo run --release -- --check all out/               # 自检，逐条 PASS / FAIL / SKIP；Windows 上还会测截屏、剪贴板、DPAPI、热键
 cargo run --release -- --ocr tests/data/mixed.png --models <模型目录>   # 识别一张图，打印每行和耗时
+Shotlate.exe --ocr-memory tests/data/mixed.png                      # OCR 引擎各阶段（加载、各计划、识别、释放）的内存和耗时（Windows）
 cargo run --release -- --bench-render                 # 4K 下覆盖层重绘耗时
 scripts/check.sh                                      # 上面几项的组合：测试 + Windows 编译检查 + UI 演示
 scripts/build-windows.sh                              # Mac 上用 mingw 交叉编译出 dist/Shotlate.exe（x64，拿去 Windows 上试）
@@ -71,7 +72,7 @@ tests/data/   OCR 测试图（mixed.png 有标准答案 mixed.txt）
 - **崩溃**：release 用 `panic = "unwind"`，后台任务（OCR、翻译、测试连接）包在 `util::guarded` 里，出错只变成一条错误提示；panic 信息会写到 `%APPDATA%\Shotlate\crash.log`，用户报闪退时先要这个文件。
 - **设置**：`kit::settings` 存在 `%APPDATA%\Shotlate\settings.json`，每次修改立即写入；没调用 `settings::init` 时（测试、开发工具）只在内存里，不会碰真实配置；测试里是线程局部的，互不干扰。
 - **API Key**：DPAPI 加密后存 `%APPDATA%\Shotlate\api-key`（`win/secret.rs`）。debug 构建只读环境变量 `DEEPSEEK_API_KEY`，从不碰真实文件。
-- **模型**：`%LOCALAPPDATA%\Shotlate\models\`，首次打开时询问下载（`app::first_launch`），ModelScope 为主、本仓库 Release `models-v1` 为备用，SHA-256 写死在 `ocr/models.rs`。没下载时截图标注照常，按 OCR / 翻译时再提示。启动时在后台加载并预热（`app::warm_up`）。
+- **模型**：`%LOCALAPPDATA%\Shotlate\models\`，首次打开时询问下载（`app::first_launch`），ModelScope 为主、本仓库 Release `models-v1` 为备用，SHA-256 写死在 `ocr/models.rs`。没下载时截图标注照常，按 OCR / 翻译时再提示。所有识别都走 `app::recognize`：第一次用时才加载模型，空闲 60 秒后释放（见下方「内存」）。
 
 ## 已经定下来的（改之前先确认）
 
@@ -104,7 +105,9 @@ tests/data/   OCR 测试图（mixed.png 有标准答案 mixed.txt）
 ## 容易踩的坑
 
 - 用 guirun 启动常驻的 Shotlate 时要写 `explorer.exe "<路径>"`：run.cmd 把输出重定向到 last-run.txt，直接启动或 `cmd /c start` 会让应用继承这个文件句柄，之后每次 guirun 都因为写不了这个文件而什么都不执行。
-- 常驻内存约 200 MB（arm64 实测工作集），大头是预热后留在内存里的 OCR 计划（检测器按屏幕尺寸、识别器按宽度分桶各一份）。要降下来得在空闲一段时间后释放计划，代价是之后第一次识别变慢。
+- **内存**：常驻约 22 MB，截图后回到 25 MB 左右；识别文字时升到 130 MB 左右，空闲 60 秒后回到约 40 MB（虚拟机里 x64 实测工作集）。两处决定了这个数字，改动时用 `Shotlate.exe --ocr-memory <图片>` 和 `scripts/vm/gx` 里的 `Get-Process` 复测：
+  - 字体：回退链里有好几个 10–20 MB 的 CJK 字体（微软雅黑、Malgun、Yu Gothic、宋体），`render::text` 用内存映射加载（`font_bytes`），不要改回 `fs::read`，否则常驻和截图后各多出约 70 MB 私有内存。
+  - OCR 引擎：优化后的计划很占内存（检测器每个尺寸约 34 MB，识别器每个宽度桶约 22 MB），而加载模型 + 编译计划总共不到一秒，远小于识别本身，所以不在启动时预热，识别完空闲 60 秒就释放（`app::ENGINE_IDLE`）。启动预热对识别速度几乎没有帮助：检测器计划按选区尺寸编译，预热的 1920×1088 很少用得上。
 
 - **`match` 里没导入的 Win32 常量会变成通配绑定**，吞掉后面所有分支。main.rs 里 `#![deny(unreachable_patterns, non_snake_case)]` 把这种情况变成编译错误，别删。
 - 进程是 Per-Monitor V2 DPI 感知（manifest + main 里的调用），坐标都是物理像素；CaptureView 用点（像素 ÷ 缩放），换算在 win/overlay.rs。

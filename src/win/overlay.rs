@@ -824,7 +824,7 @@ fn apply(i: usize, effect: Effect) {
             let Some(id) = session_id() else { return };
             std::thread::spawn(move || {
                 let lines = util::guarded(move || {
-                    let result = app::ocr_engine().and_then(|engine| engine.recognize(&img).map_err(|e| e.to_string()));
+                    let result = app::recognize(&img);
                     result.map(|lines| lines.into_iter().map(|l| (l.text, l.rect)).collect::<Vec<_>>())
                 })
                 .and_then(|r| r);
