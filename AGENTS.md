@@ -44,7 +44,7 @@ scripts/vm/vmshot out.png       # 从 Mac 截虚拟机窗口
 scripts/vm/setup.sh             # 从零重建虚拟机（下载微软官方镜像 + 无人值守安装，约 30 分钟）
 ```
 
-`--e2e` 用 SendInput 像真人一样操作已安装的应用：热键截图、覆盖层是否拿到焦点、拖选、画标注、拼音输入、Ctrl+C 后剪贴板尺寸、Ctrl+S、首次下载模型、OCR、贴图和贴图上的文字选择、设置窗口，每步截图。可以只跑一段：`--e2e <输出目录> pin`（段名 capture / save / ocr / pin / settings / translate）。被测应用带着 `SHOTLATE_TRACE=1` 启动，`util::trace` 会把调试信息追加到 `%TEMP%\shotlate-trace.log`（tester 的是 `C:\Users\tester\AppData\Local\Temp\shotlate-trace.log`），平时不写。虚拟机只有一块 1024×768、100% 缩放的屏幕，混合 DPI 多屏还得在真机上测。guest agent 的输出是 GBK，e2e.log 是 UTF-8，直接用 `utmctl file pull` 拉。
+`--e2e` 用 SendInput 像真人一样操作已安装的应用：热键截图、覆盖层是否拿到焦点、拖选、画标注、拼音输入、Ctrl+C 后剪贴板尺寸、Ctrl+S、首次下载模型、OCR、贴图和贴图上的文字选择、设置窗口，每步截图。可以只跑一段：`--e2e <输出目录> pin`（段名 esc / capture / save / ocr / pin / settings / translate）。被测应用带着 `SHOTLATE_TRACE=1` 启动，`util::trace` 会把调试信息追加到 `%TEMP%\shotlate-trace.log`（tester 的是 `C:\Users\tester\AppData\Local\Temp\shotlate-trace.log`），平时不写。虚拟机只有一块 1024×768、100% 缩放的屏幕，混合 DPI 多屏还得在真机上测。guest agent 的输出是 GBK，e2e.log 是 UTF-8，直接用 `utmctl file pull` 拉。
 
 ## 结构
 
@@ -104,6 +104,7 @@ tests/data/   OCR 测试图（mixed.png 有标准答案 mixed.txt）
 
 ## 容易踩的坑
 
+- Alt+Esc 是系统快捷键（把当前窗口放到最后），程序收不到。截图快捷键是 Alt+A 时，没松开 Alt 就按 Esc 会把覆盖层推到后面并丢掉键盘。截图期间装了一个只看 Esc 的低级键盘钩子（`overlay::install_escape_hook`，会话结束时在 `overlay::end` 卸载）：Alt 按着或覆盖层不在前台时，把 Esc 转给覆盖层。`--e2e <目录> esc` 覆盖这个场景。
 - 用 guirun 启动常驻的 Shotlate 时要写 `explorer.exe "<路径>"`：run.cmd 把输出重定向到 last-run.txt，直接启动或 `cmd /c start` 会让应用继承这个文件句柄，之后每次 guirun 都因为写不了这个文件而什么都不执行。
 - **内存**：0.1.1 原生 arm64 实测工作集：常驻约 16 MB，截图后约 18 MB，识别文字时约 110 MB，空闲 60 秒后约 25 MB（x64 在 ARM 虚拟机里仿真运行时各多出 10–20 MB）。两处决定了这个数字，改动时用 `Shotlate.exe --ocr-memory <图片>` 和 `scripts/vm/gx` 里的 `Get-Process` 复测：
   - 字体：回退链里有好几个 10–20 MB 的 CJK 字体（微软雅黑、Malgun、Yu Gothic、宋体），`render::text` 用内存映射加载（`font_bytes`），不要改回 `fs::read`，否则常驻和截图后各多出约 70 MB 私有内存。

@@ -323,6 +323,52 @@ pub fn run(out: &Path) -> i32 {
         run.line(&format!("DONE {} failed", run.failed));
         return if run.failed > 0 { 1 } else { 0 };
     }
+    if want("esc") {
+    // 1b. Esc right after the shortcut, before the mouse has moved, cancels the capture. Another app
+    // (Notepad, clicked into) holds the foreground first, as in real use.
+    let _ = std::process::Command::new("notepad.exe").spawn();
+    wait_for(10_000, || find(w!("Notepad"), PCWSTR::null()).is_some());
+    sleep(1500);
+    let notepad = find(w!("Notepad"), PCWSTR::null());
+    for attempt in 1..=3 {
+        if let Some(np) = notepad {
+            let mut r = windows::Win32::Foundation::RECT::default();
+            unsafe {
+                let _ = GetWindowRect(np, &mut r);
+            }
+            click(&run, (r.left + r.right) / 2, (r.top + r.bottom) / 2);
+            sleep(300);
+            run.info(&format!("before the shortcut the foreground is {}", class_of(unsafe { GetForegroundWindow() })));
+        }
+        start_capture();
+        let open = wait_for(5_000, || overlay().is_some());
+        sleep(300);
+        let fg = unsafe { GetForegroundWindow() };
+        run.info(&format!("attempt {attempt}: overlay open {open}, foreground {}", class_of(fg)));
+        // Attempt 2: Esc pressed before letting go of Alt (Alt+Esc is a system shortcut).
+        if attempt == 2 {
+            chord(&[VK_MENU.0], VK_ESCAPE.0);
+            sleep(300);
+            run.info(&format!("after Alt+Esc the foreground is {}", class_of(unsafe { GetForegroundWindow() })));
+        }
+        key(VK_ESCAPE.0);
+        let closed = wait_for(2_000, || overlay().is_none());
+        run.check(closed, &format!("Esc right after the shortcut cancels the capture (attempt {attempt})"));
+        if !closed {
+            run.shot(&format!("esc-failed-{attempt}"));
+            key(VK_ESCAPE.0);
+            key(VK_ESCAPE.0);
+            wait_for(2_000, || overlay().is_none());
+        }
+        sleep(500);
+    }
+    if let Some(np) = notepad {
+        unsafe {
+            let _ = PostMessageW(Some(np), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+        sleep(800);
+    }
+    }
     if want("capture") {
     // 2. Capture: hotkey, focus, drag, annotate, Chinese text, copy.
     start_capture();

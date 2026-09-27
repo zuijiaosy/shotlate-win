@@ -6,7 +6,7 @@
 //! borrow ends, and a window procedure that finds the session busy falls back to DefWindowProc.
 
 use std::cell::{Cell, RefCell};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
 use std::time::Instant;
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -41,6 +41,7 @@ const TICK_TIMER: usize = 1;
 const WM_APP_SYNC_EDIT: u32 = WM_APP + 20;
 const WM_APP_COMMIT_TEXT: u32 = WM_APP + 21;
 const WM_APP_OCR_ESCAPE: u32 = WM_APP + 22;
+const WM_APP_HOOK_ESCAPE: u32 = WM_APP + 23;
 const EDIT_ID: usize = 100;
 const OCR_EDIT_ID: usize = 101;
 
@@ -170,6 +171,7 @@ pub fn begin() {
             let _ = SetForegroundWindow(*h);
             let _ = SetFocus(Some(*h));
         }
+        install_escape_hook(*h);
         let (local, scale) = with(|s| {
             let o = &s.overlays[active];
             (Point::new((cursor.x - o.origin.x) as f32 / o.scale, (cursor.y - o.origin.y) as f32 / o.scale), o.scale)
@@ -442,6 +444,17 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
         }
         WM_APP_OCR_ESCAPE => {
             view_call(i, |v| v.key_down(Key::Escape, Mods::NONE));
+            return LRESULT(0);
+        }
+        WM_APP_HOOK_ESCAPE => {
+            // Esc that reached us through the keyboard hook: the overlay had lost the keyboard.
+            let t = target(i);
+            view_call(t, |v| v.key_down(Key::Escape, Mods::NONE));
+            // Still capturing (Esc only stepped back): try to take the keyboard back.
+            if let Some(h) = with(|s| s.overlays.get(t).map(|o| o.hwnd)).flatten() {
+                let ok = unsafe { SetForegroundWindow(h) }.as_bool();
+                util::trace(|| format!("hook Esc; overlay back in front: {ok}"));
+            }
             return LRESULT(0);
         }
         WM_CTLCOLOREDIT => {
@@ -882,9 +895,67 @@ pub fn models_became_ready() {
     }
 }
 
+// MARK: Escape hook
+
+/// The low-level keyboard hook, installed only while a capture is on screen.
+static ESCAPE_HOOK: AtomicIsize = AtomicIsize::new(0);
+/// The overlay that gets Esc from the hook.
+static ESCAPE_TARGET: AtomicIsize = AtomicIsize::new(0);
+
+/// Esc must always get out of a capture, even when the overlay has lost the keyboard: Alt+Esc (Esc
+/// pressed before letting go of Alt in the Alt+A shortcut) is a system shortcut that never reaches the
+/// app and sends the overlay behind the previous window. The hook catches Esc before the system does.
+fn install_escape_hook(overlay: HWND) {
+    ESCAPE_TARGET.store(overlay.0 as isize, Ordering::SeqCst);
+    if ESCAPE_HOOK.load(Ordering::SeqCst) != 0 {
+        return;
+    }
+    let module = unsafe { windows::Win32::System::LibraryLoader::GetModuleHandleW(None) }.ok();
+    match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(escape_hook), module.map(|m| m.into()), 0) } {
+        Ok(h) => ESCAPE_HOOK.store(h.0 as isize, Ordering::SeqCst),
+        Err(e) => util::trace(|| format!("keyboard hook failed: {e}")),
+    }
+}
+
+fn remove_escape_hook() {
+    ESCAPE_TARGET.store(0, Ordering::SeqCst);
+    let h = ESCAPE_HOOK.swap(0, Ordering::SeqCst);
+    if h != 0 {
+        unsafe {
+            let _ = UnhookWindowsHookEx(HHOOK(h as *mut _));
+        }
+    }
+}
+
+/// Runs for every key in the system while capturing, so it only looks at Esc and never blocks.
+unsafe extern "system" fn escape_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32 && matches!(wp.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN) {
+        let key = unsafe { &*(lp.0 as *const KBDLLHOOKSTRUCT) };
+        let target = ESCAPE_TARGET.load(Ordering::SeqCst);
+        if key.vkCode == VK_ESCAPE.0 as u32 && target != 0 {
+            let alt = key.flags.0 & LLKHF_ALTDOWN.0 != 0;
+            // Normal case: the overlay has the keyboard and handles Esc itself (text box, OCR panel…).
+            let ours = {
+                let fg = unsafe { GetForegroundWindow() };
+                let mut buf = [0u16; 32];
+                let n = unsafe { GetClassNameW(fg, &mut buf) } as usize;
+                String::from_utf16_lossy(&buf[..n]) == "ShotlateOverlay"
+            };
+            if alt || !ours {
+                unsafe {
+                    let _ = PostMessageW(Some(HWND(target as *mut _)), WM_APP_HOOK_ESCAPE, WPARAM(0), LPARAM(0));
+                }
+                return LRESULT(1);
+            }
+        }
+    }
+    unsafe { CallNextHookEx(None, code, wp, lp) }
+}
+
 /// Closes the session, then shows `message` in the HUD.
 pub fn end(message: Option<String>) {
     let Some(session) = SESSION.with(|s| s.try_borrow_mut().ok().and_then(|mut s| s.take())) else { return };
+    remove_escape_hook();
     unsafe {
         for e in [session.text_edit, session.ocr_edit].into_iter().flatten() {
             let _ = DestroyWindow(e.1);
