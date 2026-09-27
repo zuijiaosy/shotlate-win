@@ -5,6 +5,7 @@
 - 文字识别在本机完成（PP-OCRv6，首次启动时下载约 23 MB 的识别组件）。
 - 翻译使用 OpenAI 兼容接口，默认是 DeepSeek 的 `deepseek-flash`。只发送识别出的文字，截图本身不上传。
 - Rust 编写，安装包约 7 MB，x64 和 ARM64 都有原生版本。支持 Windows 10 2004 及以上、Windows 11。
+- 小：常驻托盘时内存约 20 MB；识别文字时临时升到 100 多 MB，空闲一分钟后回落。
 
 官网：[shotlate.pages.dev](https://shotlate.pages.dev) · 下载：[最新版本](https://github.com/zuijiaosy/shotlate-win/releases/latest)
 

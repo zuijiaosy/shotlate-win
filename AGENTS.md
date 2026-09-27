@@ -105,7 +105,7 @@ tests/data/   OCR 测试图（mixed.png 有标准答案 mixed.txt）
 ## 容易踩的坑
 
 - 用 guirun 启动常驻的 Shotlate 时要写 `explorer.exe "<路径>"`：run.cmd 把输出重定向到 last-run.txt，直接启动或 `cmd /c start` 会让应用继承这个文件句柄，之后每次 guirun 都因为写不了这个文件而什么都不执行。
-- **内存**：常驻约 22 MB，截图后回到 25 MB 左右；识别文字时升到 130 MB 左右，空闲 60 秒后回到约 40 MB（虚拟机里 x64 实测工作集）。两处决定了这个数字，改动时用 `Shotlate.exe --ocr-memory <图片>` 和 `scripts/vm/gx` 里的 `Get-Process` 复测：
+- **内存**：0.1.1 原生 arm64 实测工作集：常驻约 16 MB，截图后约 18 MB，识别文字时约 110 MB，空闲 60 秒后约 25 MB（x64 在 ARM 虚拟机里仿真运行时各多出 10–20 MB）。两处决定了这个数字，改动时用 `Shotlate.exe --ocr-memory <图片>` 和 `scripts/vm/gx` 里的 `Get-Process` 复测：
   - 字体：回退链里有好几个 10–20 MB 的 CJK 字体（微软雅黑、Malgun、Yu Gothic、宋体），`render::text` 用内存映射加载（`font_bytes`），不要改回 `fs::read`，否则常驻和截图后各多出约 70 MB 私有内存。
   - OCR 引擎：优化后的计划很占内存（检测器每个尺寸约 34 MB，识别器每个宽度桶约 22 MB），而加载模型 + 编译计划总共不到一秒，远小于识别本身，所以不在启动时预热，识别完空闲 60 秒就释放（`app::ENGINE_IDLE`）。启动预热对识别速度几乎没有帮助：检测器计划按选区尺寸编译，预热的 1920×1088 很少用得上。
 
