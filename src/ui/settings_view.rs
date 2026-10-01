@@ -9,7 +9,7 @@ use super::chrome::Theme;
 use crate::kit::color::{Color, SELECTION_BLUE};
 use crate::kit::geom::{Point, Rect, Size};
 use crate::kit::settings::{ImageFormat, MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN, Shortcut};
-use crate::kit::translator::LANGUAGES;
+use crate::kit::translator::{LANGUAGES, TranslationEngine};
 use crate::render::canvas::Canvas;
 use crate::render::text::{self, Weight};
 
@@ -65,6 +65,8 @@ pub enum Models {
 /// What the settings show; the platform fills it from the stored settings and refreshes it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SettingsState {
+    pub engine: TranslationEngine,
+    pub api_key_present: bool,
     pub capture: Shortcut,
     pub toggle_pins: Option<Shortcut>,
     pub capture_ok: bool,
@@ -86,6 +88,7 @@ pub struct SettingsState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SettingsEffect {
+    SetEngine(TranslationEngine),
     SetCapture(Shortcut),
     SetTogglePins(Option<Shortcut>),
     /// A shortcut is being recorded: the global ones must not fire meanwhile.
@@ -108,6 +111,7 @@ pub enum SettingsEffect {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Hit {
+    Engine(usize),
     Pane(Pane),
     Recorder(HotkeyTarget),
     ClearPins,
@@ -301,6 +305,14 @@ impl SettingsView {
 
     fn activate(&mut self, hit: Hit) {
         match hit {
+            Hit::Engine(i) => {
+                if !self.state.testing {
+                    self.state.engine = if i == 0 { TranslationEngine::Free } else { TranslationEngine::Llm };
+                    self.state.test_result = None;
+                    self.effects.push(SettingsEffect::SetEngine(self.state.engine));
+                    self.effects.push(SettingsEffect::FieldsChanged);
+                }
+            }
             Hit::Pane(_) => {}
             Hit::Recorder(target) => {
                 if self.recording == Some(target) {
@@ -329,7 +341,7 @@ impl SettingsView {
             }
             Hit::Link => self.effects.push(SettingsEffect::OpenUrl(DEEPSEEK_URL.into())),
             Hit::Test => {
-                if !self.state.testing {
+                if !self.state.testing && (self.state.engine == TranslationEngine::Free || self.state.api_key_present) {
                     self.state.testing = true;
                     self.state.test_result = None;
                     self.effects.push(SettingsEffect::TestConnection);
@@ -438,66 +450,49 @@ impl SettingsView {
             }
             Pane::Translate => {
                 let top = 64.0;
-                let help_h = 104.0;
-                v.push(Elem::Card(Rect::new(x, top, w, ROW + help_h)));
-                row_label(&mut v, "API Key", top);
-                v.push(Elem::Field { field: Field::ApiKey, rect: Rect::new(right - 330.0, top + 8.0, 330.0, 30.0) });
-                // Under the API Key row, across the card, so the longest line fits.
-                let hx = x + 16.0;
-                let hy = top + ROW + 2.0;
-                let line = 19.0;
-                let lines = [
-                    "只截图、标注、识别文字的话不用填。需要翻译时：",
-                    "1. 登录 DeepSeek 开放平台 ",
-                    "2. 充值，最少 1 元；",
-                    "3. 在「API Keys」里创建一个 Key，复制后粘贴到上面。",
-                    "Key 加密保存在本机；翻译时只发送识别出的文字，截图不会上传。",
-                ];
-                for (i, l) in lines.iter().enumerate() {
-                    let tone = if i == 4 { Tone::Secondary } else { Tone::Primary };
-                    v.push(Elem::Label { text: l.to_string(), at: Point::new(hx, hy + i as f32 * line), size: 12.0, weight: Weight::Regular, color: tone });
-                }
-                let (lw, _) = text::measure(lines[1], 12.0, Weight::Regular, None);
-                let link = "platform.deepseek.com";
-                let (kw, kh) = text::measure(link, 12.0, Weight::Regular, None);
-                // The measured width leaves out the trailing space, so add it back.
-                v.push(Elem::Link { rect: Rect::new(hx + lw + 4.0, hy + line, kw, kh), text: link.into() });
-
-                let top2 = top + ROW + help_h + 14.0;
-                v.push(Elem::Card(Rect::new(x, top2, w, ROW * 3.0)));
-                row_label(&mut v, "译成", top2);
-                let selected = LANGUAGES.iter().position(|l| *l == s.language).unwrap_or(0);
+                let llm = s.engine == TranslationEngine::Llm;
+                let rows = if llm { 5.0 } else { 2.0 };
+                v.push(Elem::Card(Rect::new(x, top, w, ROW * rows)));
+                row_label(&mut v, "翻译引擎", top);
                 v.push(Elem::Segmented {
-                    rect: Rect::new(right - 330.0, top2 + 9.0, 330.0, 28.0),
+                    rect: Rect::new(right - 330.0, top + 9.0, 330.0, 28.0),
+                    options: vec!["免费翻译".into(), "大模型".into()],
+                    selected: usize::from(llm), hit: Hit::Engine,
+                });
+                row_label(&mut v, "译成", top + ROW);
+                v.push(Elem::Segmented {
+                    rect: Rect::new(right - 330.0, top + ROW + 9.0, 330.0, 28.0),
                     options: LANGUAGES.iter().map(|l| l.to_string()).collect(),
-                    selected,
+                    selected: LANGUAGES.iter().position(|l| *l == s.language).unwrap_or(0),
                     hit: Hit::Language,
                 });
-                v.push(Elem::Divider(Rect::new(x + 16.0, top2 + ROW, w - 16.0, 0.5)));
-                row_label(&mut v, "Base URL", top2 + ROW);
-                v.push(Elem::Field { field: Field::BaseUrl, rect: Rect::new(right - 330.0, top2 + ROW + 8.0, 330.0, 30.0) });
-                v.push(Elem::Divider(Rect::new(x + 16.0, top2 + ROW * 2.0, w - 16.0, 0.5)));
-                row_label(&mut v, "模型", top2 + ROW * 2.0);
-                v.push(Elem::Field { field: Field::Model, rect: Rect::new(right - 330.0, top2 + ROW * 2.0 + 8.0, 330.0, 30.0) });
-
-                let by = top2 + ROW * 3.0 + 14.0;
-                v.push(Elem::Button { hit: Hit::Test, rect: Rect::new(x, by, 96.0, 30.0), label: if s.testing { "测试中…".into() } else { "测试连接".into() }, primary: true, enabled: !s.testing });
-                v.push(Elem::Button { hit: Hit::Reset, rect: Rect::new(x + 106.0, by, 96.0, 30.0), label: "恢复默认".into(), primary: false, enabled: true });
-                if let Some((ok, msg)) = &s.test_result {
-                    v.push(Elem::Paragraph {
-                        text: msg.clone(),
-                        // Beside the buttons; long messages get the full width below them instead.
-                        rect: if text::measure(msg, 12.0, Weight::Regular, None).0 <= w - 216.0 {
-                            Rect::new(x + 216.0, by + 7.0, w - 216.0, 20.0)
-                        } else {
-                            Rect::new(x + 4.0, by + 40.0, w - 8.0, 40.0)
-                        },
-                        size: 12.0,
-                        color: if *ok { Tone::Success } else { Tone::Danger },
-                    });
+                if llm {
+                    for (i, (label, field)) in [("API Key", Field::ApiKey), ("Base URL", Field::BaseUrl), ("模型", Field::Model)].into_iter().enumerate() {
+                        let y = top + ROW * (i + 2) as f32;
+                        row_label(&mut v, label, y);
+                        v.push(Elem::Field { field, rect: Rect::new(right - 330.0, y + 8.0, 330.0, 30.0) });
+                    }
                 }
-                let long = s.test_result.as_ref().is_some_and(|(_, m)| text::measure(m, 12.0, Weight::Regular, None).0 > w - 216.0);
-                footer(&mut v, "使用 OpenAI 兼容接口，默认是 DeepSeek 的 deepseek-flash。", by + if long { 84.0 } else { 44.0 });
+                let by = top + ROW * rows + 14.0;
+                v.push(Elem::Button { hit: Hit::Test, rect: Rect::new(x, by, 96.0, 30.0),
+                    label: if s.testing { "测试中…".into() } else { "测试连接".into() }, primary: true,
+                    enabled: !s.testing && (!llm || s.api_key_present) });
+                if llm {
+                    v.push(Elem::Button { hit: Hit::Reset, rect: Rect::new(x + 106.0, by, 96.0, 30.0), label: "恢复默认".into(), primary: false, enabled: !s.testing });
+                }
+                if let Some((ok, msg)) = &s.test_result {
+                    v.push(Elem::Paragraph { text: msg.clone(), rect: Rect::new(x + 4.0, by + 40.0, w - 8.0, 44.0),
+                        size: 12.0, color: if *ok { Tone::Success } else { Tone::Danger } });
+                }
+                let fy = by + if s.test_result.is_some() { 92.0 } else { 44.0 };
+                if llm {
+                    let link = "DeepSeek 开放平台";
+                    let (lw, lh) = text::measure(link, 12.0, Weight::Regular, None);
+                    v.push(Elem::Link { rect: Rect::new(x + 4.0, fy, lw, lh), text: link.into() });
+                    footer(&mut v, "支持 OpenAI 兼容接口，默认使用 DeepSeek。API Key 用 DPAPI 加密保存在本机。只发送识别出的文字，截图不会上传。", fy + 24.0);
+                } else {
+                    footer(&mut v, "腾讯交互翻译，无需 API Key。只发送识别出的文字，截图不会上传。免费服务暂时不可用时，可以切换到大模型。", fy);
+                }
             }
             Pane::General => {
                 let top = 64.0;
@@ -728,12 +723,15 @@ pub fn sidebar_center(i: usize) -> Point {
 }
 
 pub fn api_key_center() -> Point {
-    Point::new(CONTENT_X + CONTENT_W - 16.0 - 165.0, 64.0 + 8.0 + 15.0)
+    Point::new(CONTENT_X + CONTENT_W - 16.0 - 165.0, 64.0 + ROW * 2.0 + 8.0 + 15.0)
+}
+
+pub fn engine_center(llm: bool) -> Point {
+    Point::new(CONTENT_X + CONTENT_W - 16.0 - if llm { 82.5 } else { 247.5 }, 64.0 + 23.0)
 }
 
 pub fn test_button_center() -> Point {
-    let top2 = 64.0 + ROW + 104.0 + 14.0;
-    Point::new(CONTENT_X + 48.0, top2 + ROW * 3.0 + 14.0 + 15.0)
+    Point::new(CONTENT_X + 48.0, 64.0 + ROW * 5.0 + 14.0 + 15.0)
 }
 
 fn sidebar_item(i: usize) -> Rect {
@@ -811,6 +809,8 @@ mod tests {
 
     fn state() -> SettingsState {
         SettingsState {
+            engine: TranslationEngine::Llm,
+            api_key_present: true,
             capture: Shortcut::CAPTURE,
             toggle_pins: Some(Shortcut::TOGGLE_PINS),
             capture_ok: true,
@@ -857,6 +857,18 @@ mod tests {
         assert_eq!(v.pane(), Pane::Translate);
         assert_eq!(v.fields().iter().map(|f| f.0).collect::<Vec<_>>(), vec![Field::ApiKey, Field::BaseUrl, Field::Model]);
         assert!(v.drain_effects().contains(&SettingsEffect::FieldsChanged));
+    }
+
+    #[test]
+    fn free_engine_hides_secrets_and_tests_without_key() {
+        let mut v = SettingsView::new(state(), Theme { dark: false });
+        v.set_pane(Pane::Translate); v.state.api_key_present = false;
+        click(&mut v, engine_center(false));
+        assert_eq!(v.state.engine, TranslationEngine::Free);
+        assert!(v.fields().is_empty());
+        assert!(v.drain_effects().contains(&SettingsEffect::SetEngine(TranslationEngine::Free)));
+        let at = center_of(&v, Hit::Test); click(&mut v, at);
+        assert!(v.drain_effects().contains(&SettingsEffect::TestConnection));
     }
 
     #[test]

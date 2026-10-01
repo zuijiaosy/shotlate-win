@@ -6,9 +6,26 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranslationEngine {
+    #[default]
+    Free,
+    Llm,
+}
+
+impl TranslationEngine {
+    pub fn resolve(saved: Option<Self>, has_key: bool) -> Self {
+        saved.unwrap_or(if has_key { Self::Llm } else { Self::Free })
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TranslationConfig {
+    pub engine: TranslationEngine,
+    pub client_key: String,
     pub base_url: String,
     pub model: String,
     pub api_key: String,
@@ -28,6 +45,7 @@ pub enum TranslationError {
     Http { status: u16, message: String },
     Network(String),
     BadResponse(String),
+    Service(String),
 }
 
 impl std::fmt::Display for TranslationError {
@@ -43,6 +61,7 @@ impl std::fmt::Display for TranslationError {
             },
             TranslationError::Network(detail) => write!(f, "连接翻译服务失败：{detail}"),
             TranslationError::BadResponse(detail) => write!(f, "翻译结果无法解析：{detail}"),
+            TranslationError::Service(detail) => write!(f, "免费翻译暂时不可用（{detail}）。可以在设置 → 翻译 中改用大模型。"),
         }
     }
 }
@@ -132,7 +151,7 @@ fn error_message(data: &[u8]) -> String {
 }
 
 /// Sends one request and returns the translations (blocking; run it off the UI thread).
-pub fn translate(items: &[Item], config: &TranslationConfig) -> Result<HashMap<usize, String>, TranslationError> {
+fn translate_llm(items: &[Item], config: &TranslationConfig) -> Result<HashMap<usize, String>, TranslationError> {
     if items.is_empty() {
         return Ok(HashMap::new());
     }
@@ -157,6 +176,100 @@ pub fn translate(items: &[Item], config: &TranslationConfig) -> Result<HashMap<u
     parse_response(&data)
 }
 
+pub const FREE_ENDPOINT: &str = "https://transmart.qq.com/api/imt";
+pub const BATCH_LIMIT: usize = 4000;
+
+pub fn free_batches(items: &[Item]) -> Vec<Vec<Item>> {
+    let mut batches = Vec::new();
+    let mut current = Vec::new();
+    let mut count = 0;
+    for item in items {
+        let mut chunks = Vec::new();
+        let mut chunk = String::new();
+        let mut length = 0;
+        for ch in item.text.chars() {
+            if length + ch.len_utf16() > BATCH_LIMIT {
+                chunks.push(std::mem::take(&mut chunk));
+                length = 0;
+            }
+            chunk.push(ch);
+            length += ch.len_utf16();
+        }
+        if !chunk.is_empty() || chunks.is_empty() { chunks.push(chunk); }
+        for text in chunks {
+            let length = text.encode_utf16().count();
+            if !current.is_empty() && count + length > BATCH_LIMIT {
+                batches.push(std::mem::take(&mut current));
+                count = 0;
+            }
+            current.push(Item { id: item.id, text });
+            count += length;
+        }
+    }
+    if !current.is_empty() { batches.push(current); }
+    batches
+}
+
+pub fn free_request(items: &[Item], config: &TranslationConfig) -> Value {
+    let language = match config.target_language.as_str() {
+        "繁體中文" => "zh-TW", "English" => "en", "日本語" => "ja", "한국어" => "ko", _ => "zh",
+    };
+    let key = if config.client_key.is_empty() { "browser-chrome-110.0.0-Windows-shotlate" } else { &config.client_key };
+    json!({"header":{"fn":"auto_translation","client_key":key},"type":"plain","model_category":"normal",
+        "source":{"lang":"auto","text_list":items.iter().map(|i| &i.text).collect::<Vec<_>>()},"target":{"lang":language}})
+}
+
+pub fn parse_free_response(data: &[u8], expected: usize) -> Result<Vec<String>, TranslationError> {
+    let root: Value = serde_json::from_slice(data).map_err(|_| TranslationError::BadResponse("返回内容不是预期的 JSON".into()))?;
+    let code = root["header"]["ret_code"].as_str().unwrap_or("unknown");
+    if code != "succ" { return Err(TranslationError::Service(code.into())); }
+    let texts = root["auto_translation"].as_array().ok_or_else(|| TranslationError::BadResponse("译文数量与原文不一致".into()))?;
+    if texts.len() != expected { return Err(TranslationError::BadResponse("译文数量与原文不一致".into())); }
+    texts.iter().map(|s| s.as_str().map(str::to_owned).ok_or_else(|| TranslationError::BadResponse("译文不是文本".into()))).collect()
+}
+
+fn send_free(items: &[Item], config: &TranslationConfig) -> Result<Vec<String>, TranslationError> {
+    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(config.timeout))
+        .http_status_as_error(false).tls_config(super::http::tls()).build().into();
+    let response = agent.post(FREE_ENDPOINT).header("Content-Type", "application/json")
+        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/110.0.0.0 Safari/537.36")
+        .send(free_request(items, config).to_string()).map_err(|e| TranslationError::Service(e.to_string()))?;
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) { return Err(TranslationError::Service(format!("HTTP {status}"))); }
+    let data = response.into_body().read_to_vec().map_err(|e| TranslationError::Service(e.to_string()))?;
+    parse_free_response(&data, items.len())
+}
+
+fn translate_free_with(items: &[Item], send: impl Fn(&[Item]) -> Result<Vec<String>, TranslationError> + Sync) -> Result<HashMap<usize, String>, TranslationError> {
+    let batches = free_batches(items);
+    let mut merged: HashMap<usize, String> = HashMap::new();
+    // Bound concurrency and consume responses in request order, independent of completion order.
+    for window in batches.chunks(4) {
+        let responses = std::thread::scope(|scope| {
+            let handles: Vec<_> = window.iter().map(|batch| {
+                let send = &send;
+                scope.spawn(move || send(batch))
+            }).collect();
+            handles.into_iter().map(|h| h.join().unwrap_or_else(|_| Err(TranslationError::Service("翻译任务异常".into())))).collect::<Vec<_>>()
+        });
+        for (batch, texts) in window.iter().zip(responses) {
+            let texts = texts?;
+            if texts.len() != batch.len() { return Err(TranslationError::BadResponse("译文数量与原文不一致".into())); }
+            for (item, text) in batch.iter().zip(texts) {
+                merged.entry(item.id).or_default().push_str(if text.is_empty() { &item.text } else { &text });
+            }
+        }
+    }
+    Ok(merged)
+}
+
+pub fn translate(items: &[Item], config: &TranslationConfig) -> Result<HashMap<usize, String>, TranslationError> {
+    match config.engine {
+        TranslationEngine::Free => translate_free_with(items, |batch| send_free(batch, config)),
+        TranslationEngine::Llm => translate_llm(items, config),
+    }
+}
+
 /// In-memory cache so toggling or re-translating the same text costs nothing.
 #[derive(Default)]
 pub struct TranslationCache {
@@ -165,7 +278,7 @@ pub struct TranslationCache {
 
 impl TranslationCache {
     fn key(text: &str, config: &TranslationConfig) -> String {
-        format!("{}\u{1F}{}\u{1F}{}", config.model, config.target_language, text)
+        format!("{:?}\u{1F}{}\u{1F}{}\u{1F}{}", config.engine, if config.engine == TranslationEngine::Free { "" } else { &config.model }, config.target_language, text)
     }
 
     /// Translates `items`, sending only the texts that are not cached yet.
@@ -208,6 +321,8 @@ mod tests {
 
     fn config(key: &str) -> TranslationConfig {
         TranslationConfig {
+            engine: TranslationEngine::Llm,
+            client_key: String::new(),
             base_url: "https://api.deepseek.com/".into(),
             model: DEFAULT_MODEL.into(),
             api_key: key.into(),
@@ -257,5 +372,53 @@ mod tests {
             .unwrap();
         assert_eq!(second.get(&5).unwrap(), "<b>");
         assert_eq!(second.get(&6).unwrap(), "<c>");
+    }
+
+    #[test]
+    fn defaults_migration_and_explicit_choice() {
+        assert_eq!(TranslationEngine::resolve(None, false), TranslationEngine::Free);
+        assert_eq!(TranslationEngine::resolve(None, true), TranslationEngine::Llm);
+        assert_eq!(TranslationEngine::resolve(Some(TranslationEngine::Free), true), TranslationEngine::Free);
+        assert_eq!(TranslationEngine::resolve(Some(TranslationEngine::Llm), false), TranslationEngine::Llm);
+    }
+
+    #[test]
+    fn free_batches_preserve_unicode_and_long_ids() {
+        let text = "中😀e\u{301}".repeat(2000);
+        let items = [Item { id: 7, text: "before".into() }, Item { id: 42, text: text.clone() }, Item { id: 9, text: "after".into() }];
+        let batches = free_batches(&items);
+        assert!(batches.iter().all(|b| b.iter().map(|i| i.text.encode_utf16().count()).sum::<usize>() <= BATCH_LIMIT));
+        assert_eq!(batches.iter().flatten().filter(|i| i.id == 42).map(|i| i.text.as_str()).collect::<String>(), text);
+        let result = translate_free_with(&items, |b| Ok(b.iter().map(|i| i.text.clone()).collect())).unwrap();
+        assert_eq!(result[&42], text);
+        assert_eq!(result[&7], "before"); assert_eq!(result[&9], "after");
+        assert!(free_batches(&[]).is_empty());
+        assert_eq!(free_batches(&[Item { id: 0, text: "x".repeat(4000) }]).len(), 1);
+    }
+
+    #[test]
+    fn free_response_and_empty_fragment() {
+        assert_eq!(parse_free_response(br#"{"header":{"ret_code":"outOfLimit"}}"#, 1), Err(TranslationError::Service("outOfLimit".into())));
+        let data = br#"{"header":{"ret_code":"succ"},"auto_translation":["translated"]}"#;
+        assert_eq!(parse_free_response(data, 1).unwrap(), vec!["translated"]);
+        assert!(parse_free_response(data, 2).is_err());
+        let items = [Item { id: 3, text: "a".repeat(4000) + &"b".repeat(2080) }];
+        let result = translate_free_with(&items, |b| Ok(b.iter().map(|i| if i.text.starts_with('a') { "first".into() } else { String::new() }).collect())).unwrap();
+        assert_eq!(result[&3], "first".to_string() + &"b".repeat(2080));
+        assert!(translate_free_with(&items, |_| Err(TranslationError::Service("offline".into()))).is_err());
+    }
+
+    #[test]
+    fn free_request_language_and_cache_separation() {
+        let mut c = config(""); c.engine = TranslationEngine::Free; c.client_key = "client".into();
+        for (language, code) in LANGUAGES.into_iter().zip(["zh", "zh-TW", "en", "ja", "ko"]) {
+            c.target_language = language.into();
+            let body = free_request(&[Item { id: 0, text: "Hello".into() }], &c);
+            assert_eq!(body["target"]["lang"], code); assert_eq!(body["header"]["client_key"], "client");
+        }
+        let free = TranslationCache::key("text", &c); c.model = "other".into();
+        assert_eq!(free, TranslationCache::key("text", &c));
+        c.engine = TranslationEngine::Llm;
+        assert_ne!(free, TranslationCache::key("text", &c));
     }
 }

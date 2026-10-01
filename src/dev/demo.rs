@@ -308,6 +308,8 @@ pub fn settings_frames(out: &Path) {
     use crate::ui::settings_view::{Models, Pane, SettingsState, SettingsView};
     for dark in [false, true] {
         let state = SettingsState {
+            engine: crate::kit::translator::TranslationEngine::Free,
+            api_key_present: false,
             capture: Shortcut::CAPTURE,
             toggle_pins: Some(Shortcut::TOGGLE_PINS),
             capture_ok: true,
@@ -331,6 +333,14 @@ pub fn settings_frames(out: &Path) {
                 let path = out.join(format!("20-settings-{}{}.png", i, if dark { "-dark" } else { "" }));
                 let _ = pix.save_png(&path);
                 println!("wrote {}", path.display());
+            }
+        }
+        v.state.engine = crate::kit::translator::TranslationEngine::Llm;
+        v.set_pane(Pane::Translate);
+        if let Some(pix) = v.render(2.0) { let _ = pix.save_png(out.join(format!("20-settings-translate-llm{}.png", if dark { "-dark" } else { "" }))); }
+        for finished in [false, true] {
+            if let Some(pix) = crate::ui::scroll_view::render(260.0, 460.0, 2.0, None, "1,820 px · 自动滚动中", true, finished, 0.0, dark) {
+                let _ = pix.save_png(out.join(format!("21-scroll-{}{}.png", if finished { "result" } else { "panel" }, if dark { "-dark" } else { "" })));
             }
         }
     }

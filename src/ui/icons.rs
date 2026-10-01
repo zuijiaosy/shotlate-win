@@ -16,6 +16,7 @@ pub enum Icon {
     Ocr,
     Translate,
     Pin,
+    Scroll,
     Cancel,
     Save,
     Done,
@@ -47,6 +48,10 @@ pub fn draw(c: &mut Canvas, icon: Icon, center: Point, color: Color, background:
     let o = Point::new(center.x - 8.0, center.y - 8.0);
     let at = |x: f32, y: f32| Point::new(o.x + x, o.y + y);
     match icon {
+        Icon::Scroll => {
+            c.stroke_rounded(&Rect::new(o.x + 3.0, o.y, 10.0, 16.0), 1.0, color, W);
+            poly(c, &[(8.0, 3.0), (8.0, 12.0), (5.0, 9.0), (8.0, 12.0), (11.0, 9.0)], o, color, false);
+        }
         Icon::Tool(Tool::Rectangle) => c.stroke_rounded(&Rect::new(o.x + 2.0, o.y + 2.5, 12.0, 11.0), 1.5, color, W),
         Icon::Tool(Tool::Arrow) => {
             poly(c, &[(3.0, 13.0), (13.0, 3.0)], o, color, false);

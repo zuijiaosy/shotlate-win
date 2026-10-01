@@ -135,6 +135,7 @@ pub fn action_icon(action: ToolbarAction) -> Icon {
         ToolbarAction::Ocr => Icon::Ocr,
         ToolbarAction::Translate => Icon::Translate,
         ToolbarAction::Pin => Icon::Pin,
+        ToolbarAction::Scroll => Icon::Scroll,
         ToolbarAction::Cancel => Icon::Cancel,
         ToolbarAction::Save => Icon::Save,
         ToolbarAction::Done => Icon::Done,

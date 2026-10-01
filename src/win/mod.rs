@@ -15,3 +15,4 @@ pub mod secret;
 pub mod settings_window;
 pub mod updater;
 pub mod util;
+pub mod scroll;

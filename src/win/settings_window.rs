@@ -91,6 +91,8 @@ fn load_state() -> SettingsState {
     let s = settings::get();
     let (capture_ok, toggle_ok) = app::hotkey_status();
     SettingsState {
+        engine: app::translation_config().engine,
+        api_key_present: !secret::api_key().is_empty(),
         capture: s.capture_shortcut,
         toggle_pins: s.toggle_pins_shortcut,
         capture_ok,
@@ -316,6 +318,7 @@ fn apply(effect: SettingsEffect) {
                 with(|h| h.view.state.save_dir = dir.display().to_string());
             }
         }
+        SettingsEffect::SetEngine(engine) => settings::update(|s| s.translation_engine = Some(engine)),
         SettingsEffect::SetFormat(f) => settings::update(|s| s.image_format = f),
         SettingsEffect::SetLanguage(l) => settings::update(|s| s.target_language = l),
         SettingsEffect::OpenUrl(url) => {
@@ -387,7 +390,10 @@ fn edit_changed(id: i32, edit: HWND) {
     }
     let text = edit_text(edit);
     match FIELD_IDS.iter().find(|f| f.1 == id).map(|f| f.0) {
-        Some(Field::ApiKey) => secret::set_api_key(&text),
+        Some(Field::ApiKey) => {
+            secret::set_api_key(&text);
+            with(|h| h.view.state.api_key_present = !text.trim().is_empty());
+        }
         Some(Field::BaseUrl) => {
             let v = text.trim().to_string();
             settings::update(|s| s.base_url = if v.is_empty() { DEFAULT_BASE_URL.into() } else { v });

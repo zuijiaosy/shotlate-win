@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, IsClipboardFormatAvailable};
-use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock, GlobalSize};
 use windows::Win32::System::Ole::CF_DIB;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     MAPVK_VK_TO_VSC, MapVirtualKeyW,
@@ -213,6 +213,37 @@ fn clipboard_image_size() -> Option<(i32, i32)> {
         });
         let _ = CloseClipboard();
         result
+    }
+}
+
+fn clipboard_image() -> Option<crate::kit::image::RgbaImage> {
+    use crate::kit::image::RgbaImage;
+    unsafe {
+        if !super::clipboard::open(None) { return None; }
+        let image = GetClipboardData(CF_DIB.0 as u32).ok().and_then(|h| {
+            let hg = windows::Win32::Foundation::HGLOBAL(h.0);
+            let p = GlobalLock(hg) as *const u8;
+            if p.is_null() { return None; }
+            let result = (|| {
+                let size = GlobalSize(hg);
+                let header = &*(p as *const windows::Win32::Graphics::Gdi::BITMAPINFOHEADER);
+                if header.biBitCount != 32 || header.biWidth <= 0 || header.biHeight == 0 { return None; }
+                let (w, h) = (header.biWidth as u32, header.biHeight.unsigned_abs());
+                let bytes = w as usize * h as usize * 4;
+                if size < header.biSize as usize + bytes { return None; }
+                let data = std::slice::from_raw_parts(p.add(header.biSize as usize), bytes);
+                let mut image = RgbaImage::filled(w, h, [255; 4]);
+                for y in 0..h { for x in 0..w {
+                    let source_y = if header.biHeight > 0 { h - y - 1 } else { y };
+                    let i = (source_y as usize * w as usize + x as usize) * 4;
+                    let j = (y as usize * w as usize + x as usize) * 4;
+                    image.data[j..j+4].copy_from_slice(&[data[i+2], data[i+1], data[i], 255]);
+                } }
+                Some(image)
+            })();
+            let _ = GlobalUnlock(hg); result
+        });
+        let _ = CloseClipboard(); image
     }
 }
 
@@ -534,7 +565,7 @@ pub fn run(out: &Path) -> i32 {
             }
             (pt.x, pt.y)
         };
-        use crate::ui::settings_view::{api_key_center, sidebar_center, test_button_center};
+        use crate::ui::settings_view::{api_key_center, sidebar_center, test_button_center, engine_center};
         for pane in 0..4 {
             let (x, y) = at(sidebar_center(pane));
             click(&run, x, y);
@@ -542,6 +573,8 @@ pub fn run(out: &Path) -> i32 {
             run.shot(&format!("13-settings-{pane}"));
         }
         let (x, y) = at(sidebar_center(2));
+        click(&run, x, y);
+        let (x, y) = at(engine_center(true));
         click(&run, x, y);
         let (x, y) = at(api_key_center());
         click(&run, x, y);
@@ -583,6 +616,7 @@ pub fn run(out: &Path) -> i32 {
     let _ = std::fs::remove_file(crate::app_paths::api_key_file());
 
     }
+    if want("scroll") { scroll_test(&mut run); }
     run.line(&format!("DONE {} failed", run.failed));
     if run.failed > 0 { 1 } else { 0 }
 }
@@ -620,6 +654,108 @@ fn type_pinyin(run: &mut Run, s: &str) {
 
 // Shown in Notepad as the thing being captured.
 const DEMO_TEXT: &str = "Shotlate for Windows\r\n\r\n按 Alt+Shift+A 开始截图，拖出选区后标注。\r\n按 X 识别文字，按 Y 翻译，按 T 贴到屏幕上。\r\nEnter 复制，Ctrl+S 保存到“下载”文件夹。\r\n\r\nScreenshots stay on your computer.\r\nOnly the recognized text is sent for translation.\r\n";
+
+thread_local! { static SCROLL_Y: std::cell::Cell<i32> = const { std::cell::Cell::new(0) }; }
+unsafe extern "system" fn scroll_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if msg == WM_MOUSEWHEEL {
+        let delta = ((wp.0 >> 16) as u16 as i16) as i32;
+        SCROLL_Y.with(|s| s.set((s.get() - delta / 120 * 60).clamp(0, 1800)));
+        unsafe { let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false); }
+        return LRESULT(0);
+    }
+    if msg == WM_PAINT {
+        use crate::kit::{color::Color, geom::{Point, Rect}};
+        use crate::render::{canvas::Canvas, text::Weight};
+        let mut ps = PAINTSTRUCT::default(); let hdc = unsafe { BeginPaint(hwnd, &mut ps) };
+        if let Some(mut pix) = tiny_skia::Pixmap::new(560, 500) {
+            let offset = SCROLL_Y.with(|s| s.get());
+            let mut c = Canvas::new(pix.as_mut(), tiny_skia::Transform::identity());
+            c.fill_rect(&Rect::new(0.0, 0.0, 560.0, 500.0), Color::white(1.0));
+            c.save(); c.clip_rect(&Rect::new(0.0, 24.0, 560.0, 446.0));
+            for n in 0..80 {
+                let y = 24.0 + n as f32 * 32.0 - offset as f32;
+                if y < -32.0 || y > 470.0 { continue; }
+                c.fill_rect(&Rect::new(0.0, y, 560.0, 32.0), if n % 2 == 0 { Color::rgb(0.94, 0.97, 0.98) } else { Color::white(1.0) });
+                c.text(&format!("{:02}  Shotlate · 滚动截图 · capture and translate", n + 1), Point::new(18.0, y + 6.0), 15.0, Weight::Regular, Color::rgb(0.12, 0.16, 0.2));
+                c.fill_rect(&Rect::new(490.0, y + 8.0, (n * 17 % 45 + 5) as f32, 10.0), Color::rgb(0.18, 0.6, 0.38));
+            }
+            c.restore();
+            c.fill_rect(&Rect::new(0.0, 0.0, 560.0, 24.0), Color::rgb(0.1, 0.38, 0.55));
+            c.text("Shotlate 长截图演示", Point::new(16.0, 3.0), 14.0, Weight::Bold, Color::white(1.0));
+            c.fill_rect(&Rect::new(0.0, 470.0, 560.0, 30.0), Color::rgb(0.2, 0.24, 0.27));
+            c.text("固定底栏只保留一次", Point::new(16.0, 477.0), 13.0, Weight::Regular, Color::white(1.0));
+            util::blit(hdc, 0, 0, &pix);
+        }
+        unsafe { let _ = EndPaint(hwnd, &ps); } return LRESULT(0);
+    }
+    if msg == WM_APP + 72 { SCROLL_Y.with(|s| s.set(0)); unsafe { let _ = windows::Win32::Graphics::Gdi::InvalidateRect(Some(hwnd), None, false); } return LRESULT(0); }
+    unsafe { DefWindowProcW(hwnd, msg, wp, lp) }
+}
+fn scroll_test(run: &mut Run) {
+    std::thread::spawn(move || unsafe {
+        let class = WNDCLASSEXW { cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32, lpfnWndProc: Some(scroll_proc), lpszClassName: w!("ShotlateScrollDemo"),
+            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(), ..Default::default() };
+        RegisterClassExW(&class);
+        let Ok(hwnd) = CreateWindowExW(WS_EX_TOPMOST, w!("ShotlateScrollDemo"), w!("长截图演示"), WS_POPUP | WS_VISIBLE, 30, 90, 560, 500, None, None, None, None) else { return };
+        let _ = SetForegroundWindow(hwnd);
+        let mut msg = MSG::default(); while GetMessageW(&mut msg, None, 0, 0).as_bool() { let _ = TranslateMessage(&msg); DispatchMessageW(&msg); }
+    });
+    run.check(wait_for(5000, || find(w!("ShotlateScrollDemo"), PCWSTR::null()).is_some()), "scroll demo opens");
+    let capture = |run: &Run| {
+        start_capture(); wait_for(5000, || overlay().is_some()); sleep(300);
+        drag(run, (30, 90), (590, 590)); key(0x53);
+        wait_for(5000, || find(w!("ShotlateScroll"), w!("Shotlate 长截图")).is_some()); sleep(400);
+    };
+    let state = || find(w!("ShotlateScroll"), w!("Shotlate 长截图")).map(|h| unsafe { SendMessageW(h, crate::win::scroll::TEST_STATE, Some(WPARAM(0)), Some(LPARAM(0))).0 }).unwrap_or(0);
+    let button = |run: &Run, index: usize, finished: bool| {
+        if let Some(hwnd) = find(w!("ShotlateScroll"), w!("Shotlate 长截图")) {
+            let mut r = windows::Win32::Foundation::RECT::default(); unsafe { let _ = GetClientRect(hwnd, &mut r); }
+            let scale = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) }.max(96) as f32 / 96.0;
+            let center = crate::ui::scroll_view::buttons(r.right as f32 / scale, r.bottom as f32 / scale, finished)[index].0.center();
+            let mut p = windows::Win32::Foundation::POINT { x: (center.x * scale) as i32, y: (center.y * scale) as i32 };
+            unsafe { let _ = windows::Win32::Graphics::Gdi::ClientToScreen(hwnd, &mut p); }
+            click(run, p.x, p.y);
+        }
+    };
+    capture(run); move_to(run, 250, 300);
+    for _ in 0..6 {
+        let mut input = mouse(run, 250, 300, windows::Win32::UI::Input::KeyboardAndMouse::MOUSEEVENTF_WHEEL);
+        input.Anonymous.mi.mouseData = (-120i32) as u32; send(&[input]); sleep(450);
+    }
+    run.check(state() / 2 > 700, "manual scrolling appends real desktop frames");
+    run.shot("16-scroll-manual"); button(run, 1, false); sleep(1200);
+    run.shot("17-scroll-result"); button(run, 0, true); sleep(300);
+    run.check(clipboard_image_size().is_some_and(|(w, h)| w == 560 && h > 700), "finished long screenshot copies at full resolution");
+    if let Some((w, h)) = clipboard_image_size() { run.info(&format!("long clipboard {w}x{h}")); }
+    button(run, 1, true); sleep(300); button(run, 2, true); sleep(300);
+    run.check(find(w!("ShotlatePin"), PCWSTR::null()).is_some(), "long screenshot can be pinned");
+    if let Some(p) = find(w!("ShotlatePin"), PCWSTR::null()) { unsafe { let _ = PostMessageW(Some(p), WM_CLOSE, WPARAM(0), LPARAM(0)); } }
+    button(run, 3, true); sleep(300);
+    capture(run); key(VK_ESCAPE.0); sleep(300);
+    run.check(find(w!("ShotlateScroll"), PCWSTR::null()).is_none(), "Esc cancels long capture while another app has focus");
+    if let Some(target) = find(w!("ShotlateScrollDemo"), PCWSTR::null()) { unsafe { SendMessageW(target, WM_APP + 72, Some(WPARAM(0)), Some(LPARAM(0))); } }
+    capture(run); button(run, 0, false); sleep(350); move_to(run, 950, 700); sleep(350);
+    run.check(state() > 0 && state() % 2 == 0, "moving outside the region pauses automatic scrolling");
+    button(run, 0, false);
+    for _ in 0..65 { sleep(250); run.frame(0.25); if state() / 2 > 2100 && state() % 2 == 0 { break; } }
+    run.shot("18-scroll-auto");
+    run.check(state() / 2 > 2100 && state() % 2 == 0, "automatic scrolling reaches the bottom and finishes");
+    button(run, 0, true); sleep(300);
+    run.check(clipboard_image_size().is_some_and(|(_, h)| h >= 2200), "automatic result has the full page");
+    if let Some(image) = clipboard_image() {
+        if let Ok(bytes) = image.encode_png() { let _ = std::fs::write(run.out.join("scroll-long.png"), bytes); }
+    }
+    button(run, 3, true);
+    let wide_rect = windows::Win32::Foundation::RECT { left: 30, top: 90, right: 950, bottom: 590 };
+    let baseline = screen::grab(&wide_rect).map(|p| crate::kit::image::RgbaImage { width: p.width(), height: p.height(), data: p.take() });
+    start_capture(); wait_for(5000, || overlay().is_some()); sleep(300);
+    drag(run, (30, 90), (950, 590)); key(0x53);
+    run.check(wait_for(5000, || state() / 2 == 500), "wide region starts with the panel inside the region");
+    run.shot("19-scroll-wide"); button(run, 1, false); sleep(1000); button(run, 0, true); sleep(300);
+    run.check(clipboard_image() == baseline, "overlapping control panel is excluded from captured pixels");
+    button(run, 3, true);
+    if let Some(target) = find(w!("ShotlateScrollDemo"), PCWSTR::null()) { unsafe { let _ = PostMessageW(Some(target), WM_CLOSE, WPARAM(0), LPARAM(0)); } }
+}
 
 /// `--e2e <out> demo`: records the README's capture flow on the real desktop, frame by frame, with an
 /// ffconcat list (`frames.ffconcat`) for ffmpeg. Geometry below assumes the VM's 1024×768 screen.

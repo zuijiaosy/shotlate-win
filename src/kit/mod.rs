@@ -12,3 +12,4 @@ pub mod settings;
 pub mod export;
 pub mod http;
 pub mod textselection;
+pub mod scrollstitcher;

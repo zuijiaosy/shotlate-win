@@ -10,6 +10,7 @@ pub enum ToolbarAction {
     Ocr,
     Translate,
     Pin,
+    Scroll,
     Cancel,
     Save,
     Done,
@@ -19,7 +20,7 @@ impl ToolbarAction {
     /// Every button, in toolbar order.
     pub fn all() -> Vec<ToolbarAction> {
         let mut v: Vec<ToolbarAction> = Tool::ALL.iter().map(|t| ToolbarAction::Tool(*t)).collect();
-        v.extend([ToolbarAction::Undo, ToolbarAction::Ocr, ToolbarAction::Translate, ToolbarAction::Pin, ToolbarAction::Cancel, ToolbarAction::Save, ToolbarAction::Done]);
+        v.extend([ToolbarAction::Undo, ToolbarAction::Ocr, ToolbarAction::Translate, ToolbarAction::Pin, ToolbarAction::Scroll, ToolbarAction::Cancel, ToolbarAction::Save, ToolbarAction::Done]);
         v
     }
 
@@ -30,6 +31,7 @@ impl ToolbarAction {
             ToolbarAction::Ocr => Some("ocr"),
             ToolbarAction::Translate => Some("translate"),
             ToolbarAction::Pin => Some("pin"),
+            ToolbarAction::Scroll => Some("scroll"),
             _ => None,
         }
     }
@@ -56,6 +58,7 @@ impl ToolbarAction {
             ToolbarAction::Ocr => "识别文字",
             ToolbarAction::Translate => "翻译到原位",
             ToolbarAction::Pin => "贴到屏幕上",
+            ToolbarAction::Scroll => "长截图",
             ToolbarAction::Cancel => "退出截图",
             ToolbarAction::Save => "保存",
             ToolbarAction::Done => "复制到剪贴板",
@@ -93,6 +96,7 @@ pub fn default_key(id: &str) -> Option<&'static str> {
         "ocr" => Some("x"),
         "translate" => Some("y"),
         "pin" => Some("t"),
+        "scroll" => Some("s"),
         _ => None,
     }
 }

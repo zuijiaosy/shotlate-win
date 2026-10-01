@@ -165,8 +165,16 @@ pub fn cancel_model_download() {
 // MARK: Translation, saving
 
 pub fn translation_config() -> TranslationConfig {
+    let api_key = secret::api_key();
+    settings::update(|s| {
+        if s.client_key.is_empty() {
+            let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos();
+            s.client_key = format!("browser-chrome-110.0.0-Windows-shotlate-{stamp}-{}", std::process::id());
+        }
+    });
     let s = settings::get();
-    TranslationConfig { base_url: s.base_url, model: s.model, api_key: secret::api_key(), target_language: s.target_language, timeout: Duration::from_secs(20) }
+    TranslationConfig { engine: crate::kit::translator::TranslationEngine::resolve(s.translation_engine, !api_key.is_empty()), client_key: s.client_key,
+        base_url: s.base_url, model: s.model, api_key, target_language: s.target_language, timeout: Duration::from_secs(20) }
 }
 
 pub fn translation_cache() -> &'static TranslationCache {
@@ -439,6 +447,7 @@ pub fn run() -> i32 {
         RegisterClassExW(&class);
     }
     overlay::register();
+    super::scroll::register();
     pin::register();
     hud::register();
     settings_window::register();

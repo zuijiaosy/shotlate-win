@@ -75,6 +75,7 @@ pub struct TextInput {
 /// Something the platform has to do for the view.
 #[derive(Debug)]
 pub enum Effect {
+    StartScroll(Rect),
     /// End the capture without output.
     Close,
     /// Copy the image and close; the platform shows "已复制到剪贴板".
@@ -188,7 +189,7 @@ pub struct CaptureView {
     window_rects: Vec<Rect>,
     theme: Theme,
     models_ready: bool,
-    api_key_present: bool,
+    translation_ready: bool,
 
     has_selection: bool,
     selection: Rect,
@@ -246,7 +247,7 @@ pub struct CaptureView {
 
 impl CaptureView {
     /// `pixels` is the frozen screen at full resolution; `size` is the monitor in points (pixels / scale).
-    pub fn new(monitor: String, pixels: Pixmap, size: Size, window_rects: Vec<Rect>, theme: Theme, models_ready: bool, api_key_present: bool) -> CaptureView {
+    pub fn new(monitor: String, pixels: Pixmap, size: Size, window_rects: Vec<Rect>, theme: Theme, models_ready: bool, translation_ready: bool) -> CaptureView {
         let bounds = Rect::new(0.0, 0.0, size.width, size.height);
         CaptureView {
             monitor,
@@ -254,7 +255,7 @@ impl CaptureView {
             window_rects,
             theme,
             models_ready,
-            api_key_present,
+            translation_ready,
             has_selection: false,
             selection: Rect::ZERO,
             hover_rect: None,
@@ -1836,6 +1837,16 @@ impl CaptureView {
             ToolbarAction::Ocr => self.run_ocr(),
             ToolbarAction::Translate => self.run_translation(),
             ToolbarAction::Pin => self.finish(Output::Pin),
+            ToolbarAction::Scroll => {
+                if self.has_selection && self.busy.is_none() {
+                    if self.selection.width < 48.0 || self.selection.height < 64.0 {
+                        self.show_message("长截图区域太小，请扩大选区");
+                    } else {
+                        self.commit_text();
+                        self.effects.push(Effect::StartScroll(self.selection));
+                    }
+                }
+            }
             ToolbarAction::Cancel => self.effects.push(Effect::Close),
             ToolbarAction::Save => self.finish(if self.shift_down { Output::SaveAs } else { Output::Save }),
             ToolbarAction::Done => self.finish(Output::Copy),
@@ -1958,7 +1969,7 @@ impl CaptureView {
             }
             _ => {}
         }
-        if !self.api_key_present {
+        if !self.translation_ready {
             self.show_toast("还没有填写 API Key。请按 Esc 退出截图，在托盘图标 → 设置 → 翻译 中填写（不翻译可以不填）。", Some(Duration::from_millis(5000)));
             return;
         }

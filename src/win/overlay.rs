@@ -90,7 +90,7 @@ pub fn is_active() -> bool {
 
 /// Freezes every monitor and opens the overlays.
 pub fn begin() {
-    if is_active() {
+    if is_active() || super::scroll::is_active() {
         return;
     }
     let previous = unsafe { GetForegroundWindow() };
@@ -99,7 +99,8 @@ pub fn begin() {
     let monitors = screen::monitors();
     let theme = Theme { dark: util::is_dark_mode() };
     let models_ready = app::models_ready();
-    let api_key_present = !super::secret::api_key().is_empty();
+    let config = app::translation_config();
+    let api_key_present = config.engine == crate::kit::translator::TranslationEngine::Free || !config.api_key.is_empty();
     let mut overlays = Vec::new();
     // One rect per overlay, in the same order: a monitor whose grab failed gets neither.
     let mut rects: Vec<RECT> = Vec::new();
@@ -824,6 +825,13 @@ fn apply(i: usize, effect: Effect) {
             let screen = POINT { x: origin.x + (rect.x * scale).round() as i32, y: origin.y + (rect.y * scale).round() as i32 };
             end(None);
             pin::create(img, screen);
+        }
+        Effect::StartScroll(rect) => {
+            let Some((origin, scale)) = with(|s| s.overlays.get(i).map(|o| (o.origin, o.scale))).flatten() else { return };
+            let r = RECT { left: origin.x + (rect.x * scale).round() as i32, top: origin.y + (rect.y * scale).round() as i32,
+                right: origin.x + (rect.max_x() * scale).round() as i32, bottom: origin.y + (rect.max_y() * scale).round() as i32 };
+            end(None);
+            super::scroll::begin(r, scale);
         }
         Effect::CopyText(text) => {
             clipboard::set_text(util::app_window(), &text);

@@ -4,4 +4,5 @@ pub mod capture;
 pub mod chrome;
 pub mod icons;
 pub mod toolbar;
+pub mod scroll_view;
 pub mod settings_view;

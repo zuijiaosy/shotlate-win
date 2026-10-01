@@ -80,9 +80,10 @@ tests/data/   OCR 测试图（mixed.png 有标准答案 mixed.txt）
 - **OCR 用 tract 跑 RapidOCR 的 PP-OCRv6 ONNX 模型**：检测 `PP-OCRv6_det_tiny`（1.8 MB）+ 识别 `PP-OCRv6_rec_small`（21.2 MB）。识别 tiny 认不出日文，不要换。**不需要 onnxruntime.dll**（原计划要下载 dll，改用纯 Rust 的 tract 后省掉了），只下载两个模型，约 23 MB。字符表在识别模型的元数据里。
 - tract 只能按具体输入尺寸优化：检测按图片尺寸缓存最近 4 个计划，识别按宽度档位（160…2560）缓存，太宽的按 1280 取整。符号尺寸的识别慢 3 倍，别用。
 - 体积：tract 的图处理代码用 `opt-level = "s"`（Cargo.toml 末尾），exe 从约 20 MB 降到约 13 MB（改成 panic = unwind 后约 14.7 MB），识别速度基本不变；`"z"` 能到更小但识别慢 30%，没用。
-- **翻译用 DeepSeek（deepseek-flash）**，接口和缓存与 Mac 版一致，只发送识别出的文字。设置 → 翻译里的说明文字：只截图、标注、识别不用填；需要翻译时登录 platform.deepseek.com，充值最少 1 元，在「API Keys」创建并粘贴。
+- **翻译默认免费**：`kit::translator::translate` 按 `TranslationEngine` 分发，免费引擎使用腾讯 TranSmart 公开网页接口（非官方，无 Key），按 4000 个 UTF-16 单元拆分长段落，最多四批并发，再按原 ID 和顺序合并。大模型保持 OpenAI 兼容，默认 DeepSeek。设置的 `translationEngine` 缺失时，有 Key 的老用户保留 Llm，否则 Free；用户手动选择后尊重记录。`clientKey` 首次使用生成并保存，缓存区分引擎。
 - 默认截图热键 `Alt+Shift+A`（Alt+A 是微信截图、Ctrl+Alt+A 是 QQ 截图），隐藏/显示贴图 `Alt+Shift+H`。不抢 PrtScn。Mac 的 ⌘ 一律对应 Ctrl；重做同时支持 `Ctrl+Y` 和 `Ctrl+Shift+Z`；工具单键（`1`–`7`、X、Y、T）和 Mac 一样，可在悬停卡片上改。
-- 第一版范围：截图 → 7 个标注 → 复制 / 保存 / 贴图（含贴图上直接选中、复制文字）/ OCR / 翻译，外加托盘、设置、自动更新。长截图、扫码、贴图再标注、贴图翻译、延时截图、剪贴板贴图放第二版（工具栏上没有长截图按钮）。
+- 当前范围：截图 → 7 个标注 → 复制 / 保存 / 贴图（含文字选择）/ OCR / 翻译，外加手动和自动长截图、托盘、设置、自动更新。扫码、贴图再标注、贴图翻译、延时截图、剪贴板贴图仍未实现。
+- **长截图**：工具栏 `S` → `Effect::StartScroll` → `win::scroll`。GDI 每 50 ms 取帧，单个 worker 持有 `kit::scrollstitcher::ScrollStitcher`，待处理帧只保留最新一张；面板优先避让，宽选区时取帧前隐藏并 DwmFlush，之后无激活恢复。高度上限 60,000 px，原图预算 256 MiB，完成前处理最后一帧。自动模式用 SendInput，移出选区或切换窗口暂停；只有已处理本轮稳定后的帧才能判断进展，首次未滚动则暂停，确认两次无进展才完成。歧义匹配不猜接缝。结果使用 Arc 原图和有限尺寸缩略预览，关闭不复制原图。`--e2e <out> scroll` 验证真实桌面拼接、暂停、输出和宽选区面板排除。
 - 安装：Inno Setup，装到 `%LOCALAPPDATA%\Programs\Shotlate`，不要管理员权限、没有向导页。支持 Windows 10 2004 及以上，x64 和 ARM64 各一个安装包。
 - 自动更新：WinSparkle 0.9（安装包里带 WinSparkle.dll，开发构建没有，更新功能就不出现）。appcast 用和 Mac 版 Sparkle **同一把 EdDSA 密钥**签名，公钥在 `win/updater.rs`，CI 会检查私钥和它是一对。
 

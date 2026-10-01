@@ -107,6 +107,8 @@ fn settings_roundtrip(out: &Path) -> Outcome {
 fn translate_network(_: &Path) -> Outcome {
     use crate::kit::translator::{self, Item, TranslationConfig, TranslationError};
     let config = TranslationConfig {
+        engine: crate::kit::translator::TranslationEngine::Llm,
+        client_key: String::new(),
         base_url: translator::DEFAULT_BASE_URL.into(),
         model: translator::DEFAULT_MODEL.into(),
         api_key: "sk-shotlate-self-check".into(),

@@ -17,6 +17,21 @@ impl std::fmt::Debug for RgbaImage {
 }
 
 impl RgbaImage {
+    pub fn thumbnail(&self, max_width: u32, max_height: u32) -> Option<RgbaImage> {
+        if self.width == 0 || self.height == 0 || max_width == 0 || max_height == 0 { return None; }
+        let scale = (max_width as f64 / self.width as f64).min(max_height as f64 / self.height as f64).min(1.0);
+        let width = (self.width as f64 * scale).round().max(1.0) as u32;
+        let height = (self.height as f64 * scale).round().max(1.0) as u32;
+        let mut data = Vec::new();
+        data.try_reserve_exact(width as usize * height as usize * 4).ok()?;
+        for y in 0..height { for x in 0..width {
+            let sx = (x as u64 * self.width as u64 / width as u64) as u32;
+            let sy = (y as u64 * self.height as u64 / height as u64) as u32;
+            data.extend_from_slice(&self.pixel(sx, sy));
+        } }
+        Some(RgbaImage { width, height, data })
+    }
+
     pub fn filled(width: u32, height: u32, rgba: [u8; 4]) -> RgbaImage {
         let mut data = Vec::with_capacity(width as usize * height as usize * 4);
         for _ in 0..(width as usize * height as usize) {
@@ -102,6 +117,15 @@ mod tests {
         img.data[4..8].copy_from_slice(&[200, 100, 50, 255]);
         let back = RgbaImage::decode_png(&img.encode_png().unwrap()).unwrap();
         assert_eq!(back, img);
+    }
+
+    #[test] fn thumbnail_is_bounded_and_preserves_source() {
+        let image = RgbaImage::filled(40, 600, [10, 20, 30, 255]);
+        let preview = image.thumbnail(20, 60).unwrap();
+        assert_eq!((preview.width, preview.height), (4, 60));
+        assert_eq!(preview.pixel(0, 0), [10, 20, 30, 255]);
+        assert_eq!(image.data.len(), 40 * 600 * 4);
+        assert!(image.thumbnail(0, 60).is_none());
     }
 
     #[test]

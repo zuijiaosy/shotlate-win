@@ -105,6 +105,8 @@ impl ImageFormat {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
+    pub translation_engine: Option<super::translator::TranslationEngine>,
+    pub client_key: String,
     pub capture_shortcut: Shortcut,
     /// None: the user cleared it.
     pub toggle_pins_shortcut: Option<Shortcut>,
@@ -130,6 +132,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Settings {
         Settings {
+            translation_engine: None,
+            client_key: String::new(),
             capture_shortcut: Shortcut::CAPTURE,
             toggle_pins_shortcut: Some(Shortcut::TOGGLE_PINS),
             save_directory: None,

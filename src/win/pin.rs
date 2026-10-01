@@ -124,6 +124,15 @@ pub fn create(image: RgbaImage, origin: POINT) {
     prepare_text(hwnd, for_text);
 }
 
+/// Fits a finished long screenshot into the monitor before the user zooms it.
+pub fn create_fitted(image: RgbaImage, origin: POINT, max_width: f32, max_height: f32) {
+    let zoom = (max_width / image.width.max(1) as f32).min(max_height / image.height.max(1) as f32).min(1.0);
+    create(image, origin);
+    if let Some(hwnd) = with(|p| p.pins.last().map(|p| p.hwnd)).flatten() {
+        set_zoom(hwnd, zoom, Some(origin), false);
+    }
+}
+
 /// Recognizes the pin's text in the background so it can be selected with the mouse, like on the Mac.
 /// Silently skipped without the recognition models.
 fn prepare_text(hwnd: HWND, image: RgbaImage) {
@@ -407,6 +416,7 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> 
     let ctrl = unsafe { GetKeyState(VK_CONTROL.0 as i32) } < 0;
     let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
     match msg {
+        WM_CLOSE => { close(hwnd); return LRESULT(0); }
         WM_ERASEBKGND => return LRESULT(1),
         WM_PAINT => {
             paint(hwnd);
