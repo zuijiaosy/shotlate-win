@@ -2,6 +2,8 @@
 
 [Shotlate](https://github.com/zuijiaosy/shotlate) 的 Windows 版：截图 → 标注 → 复制 / 保存 / 贴图 / 识别文字 / 翻译到原位。小而精，常驻托盘。
 
+本项目认可并支持 [LINUX DO](https://linux.do) 社区
+
 - 文字识别在本机完成（PP-OCRv6，首次启动时下载约 23 MB 的识别组件）。
 - 新用户默认免费翻译，无需 API Key；也可以切换到 OpenAI 兼容大模型，已有 Key 的老用户保留原设置。只发送识别出的文字，截图本身不上传。
 - 支持手动和自动长截图，固定栏只保留一次，最长 60,000 像素。
