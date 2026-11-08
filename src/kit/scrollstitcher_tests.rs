@@ -134,3 +134,19 @@ fn stitcher() -> ScrollStitcher { ScrollStitcher::new(60_000, 0) }
     let mut s = stitcher(); s.add(frame(0, 10, 8, false), None); s.add(frame(30, 10, 8, false), None);
     let expected = s.image().unwrap(); assert_eq!(s.into_image().unwrap(), expected);
 }
+
+#[test] fn repeating_rows_with_long_step_follow_hint() {
+    // Period 24, more than a dozen periods per frame: every period ties, and the real offset must still be scored.
+    let periodic = |scroll: usize| RgbaImage { width: 96, height: 400,
+        data: (0..400).flat_map(|y| if y < 10 { vec![16; 384] } else { content((scroll + y) % 24) }).collect() };
+    let mut s = stitcher(); s.add(periodic(0), None);
+    for k in 1..=5 { assert_eq!(s.add(periodic(230 * k), Some(230)), StitchResult::Appended(230)); }
+    let mut unhinted = stitcher(); unhinted.add(periodic(0), None);
+    assert_eq!(unhinted.add(periodic(230), None), StitchResult::NoOverlap);
+}
+
+#[test] fn identical_frame_is_unchanged() {
+    let mut s = stitcher(); s.add(frame(0, 10, 8, false), None); s.add(frame(30, 10, 8, false), None);
+    assert_eq!(s.add(frame(30, 10, 8, false), None), StitchResult::Unchanged);
+    assert_eq!(s.add(frame(60, 10, 8, false), None), StitchResult::Appended(30));
+}

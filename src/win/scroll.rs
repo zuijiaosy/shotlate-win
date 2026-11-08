@@ -95,12 +95,14 @@ pub fn begin(rect: RECT, scale: f32) {
                 if let Some(frame) = frame {
                     let Frame { image, serial, captured } = frame;
                     let result = stitcher.add(image, None);
-                    let preview = stitcher.preview(preview_width, preview_height).and_then(pixels);
+                    // Most samples are idle; only redraw the preview when the stitched image may have changed.
+                    let changed = matches!(result, StitchResult::Started | StitchResult::Appended(_) | StitchResult::ScrolledBack);
+                    let preview = if changed { stitcher.preview(preview_width, preview_height).and_then(pixels) } else { None };
                     let height = stitcher.height();
                     util::run_on_ui(move || {
                         let hwnd = with(|s| {
                             if s.id != id { return None; }
-                            s.height = height; s.preview = preview;
+                            s.height = height; if changed { s.preview = preview; }
                             s.processed_at = Some(captured);
                             s.auto.frame_processed(serial);
                             if serial >= s.step_serial && matches!(result, StitchResult::Appended(_)) { s.progress = true; }

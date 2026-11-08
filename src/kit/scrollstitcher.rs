@@ -28,12 +28,14 @@ pub struct ScrollStitcher {
     edge: usize,
     first: Option<RgbaImage>,
     previous: Option<Signatures>,
+    /// Pixels behind `previous`; idle frames are usually byte-identical and skip signatures entirely.
+    previous_data: Vec<u8>,
 }
 
 impl ScrollStitcher {
     pub fn new(max_height: usize, ignored_side_columns: usize) -> Self {
         Self { max_height, ignored_side_columns, width: 0, frame_height: 0, chunks: Vec::new(), committed: 0,
-            tail: Vec::new(), edge: 0, first: None, previous: None }
+            tail: Vec::new(), edge: 0, first: None, previous: None, previous_data: Vec::new() }
     }
 
     pub fn height(&self) -> usize { if self.width == 0 { 0 } else { self.committed + self.tail.len() / (self.width * 4) } }
@@ -42,12 +44,14 @@ impl ScrollStitcher {
         let h = frame.height as usize;
         if frame.width == 0 || h < 16 || frame.data.len() != frame.width as usize * h * 4 { return StitchResult::NoOverlap; }
         if h > self.max_height { return StitchResult::LimitReached; }
+        // Frames are sampled every 50 ms whether or not anything moves; a memcmp is far cheaper than signatures.
+        if self.previous.is_some() && frame.data == self.previous_data { return StitchResult::Unchanged; }
         let sig = self.signatures(&frame);
         if self.width != frame.width as usize || self.frame_height != h || self.previous.is_none() {
             self.width = frame.width as usize;
             self.frame_height = h;
             self.chunks.clear(); self.committed = 0; self.edge = 0;
-            self.tail = frame.data.clone(); self.first = Some(frame); self.previous = Some(sig);
+            self.tail = frame.data.clone(); self.previous_data = frame.data.clone(); self.first = Some(frame); self.previous = Some(sig);
             return StitchResult::Started;
         }
         let prev = self.previous.as_ref().unwrap();
@@ -61,7 +65,7 @@ impl ScrollStitcher {
         if d < 0 {
             let edge = self.edge + (-d) as usize;
             if self.first.is_none() && edge <= band.end {
-                self.edge = edge; self.tail = rows(&frame, edge..h); self.previous = Some(sig);
+                self.edge = edge; self.tail = rows(&frame, edge..h); self.previous = Some(sig); self.previous_data = frame.data;
             }
             return StitchResult::ScrolledBack;
         }
@@ -74,7 +78,7 @@ impl ScrollStitcher {
         if committed + end - start + h - end > self.max_height { return StitchResult::LimitReached; }
         if let Some(first) = self.first.take() { self.append(rows(&first, 0..flush)); }
         if end > start { self.append(rows(&frame, start..end)); }
-        self.edge = end; self.tail = rows(&frame, end..h); self.previous = Some(sig);
+        self.edge = end; self.tail = rows(&frame, end..h); self.previous = Some(sig); self.previous_data = frame.data;
         StitchResult::Appended(d as usize)
     }
 
@@ -131,6 +135,7 @@ impl ScrollStitcher {
         if self.width == 0 || self.height() == 0 { return None; }
         let height = self.height();
         self.first = None;
+        self.previous_data = Vec::new();
         let mut data = Vec::new();
         data.try_reserve_exact(height.checked_mul(self.width)?.checked_mul(4)?).ok()?;
         for chunk in self.chunks.into_iter().chain(std::iter::once(self.tail)) { data.extend_from_slice(&chunk); }
@@ -195,13 +200,20 @@ fn offset(a: &Signatures, b: &Signatures, band: Range<usize>, hint: Option<i32>)
     let scores: Vec<_> = (-limit..=limit).map(|d| score(a, b, &sparse, d, band.clone()).unwrap_or(f64::INFINITY)).collect();
     let mut seeds: Vec<_> = (0..scores.len()).filter(|&i| scores[i] <= MAX_SCORE * 1.5 && (i == 0 || scores[i - 1] >= scores[i]) && (i + 1 == scores.len() || scores[i + 1] >= scores[i])).collect();
     seeds.sort_by(|&i, &j| scores[i].total_cmp(&scores[j]));
-    let mut minima: Vec<(i32, f64)> = Vec::new();
+    // Rescore plenty of seeds: with repeating rows many tie, and stopping at six dropped the real offset
+    // (it then also never showed up as a tie, so the ambiguity check below could not see it).
+    let mut pool: Vec<i32> = Vec::new();
     for i in seeds {
         let d = i as i32 - limit;
-        if minima.len() >= 6 { break; }
-        if minima.iter().any(|&(p, _)| (p - d).abs() <= 3) { continue; }
-        if let Some(s) = score(a, b, &templates, d, band.clone()) { minima.push((d, s)); }
+        if pool.len() >= 32 { break; }
+        if !pool.iter().any(|&p| (p - d).abs() <= 3) { pool.push(d); }
     }
+    // The true offset can sit a few rows from the hint and lose the deduplication above.
+    if let Some(h) = hint {
+        let d = h.clamp(-limit, limit);
+        if !pool.iter().any(|&p| (p - d).abs() <= 3) { pool.push(d); }
+    }
+    let mut minima: Vec<(i32, f64)> = pool.into_iter().filter_map(|d| score(a, b, &templates, d, band.clone()).map(|s| (d, s))).collect();
     minima.retain(|&(_, s)| s <= MAX_SCORE);
     let best = minima.iter().map(|&(_, s)| s).min_by(f64::total_cmp)?;
     let mut ties: Vec<_> = minima.into_iter().filter(|&(_, s)| s <= best * 1.5 + 1.5).collect();
